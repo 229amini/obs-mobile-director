@@ -4,8 +4,6 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
@@ -41,9 +39,7 @@ fun CameraPreview(
     }
 
     AndroidView(
-        modifier = modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f),
+        modifier = modifier,
         factory = { viewContext ->
             PreviewView(viewContext).apply {
                 scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -78,4 +74,3 @@ fun CameraPreview(
         }
     }
 }
-
