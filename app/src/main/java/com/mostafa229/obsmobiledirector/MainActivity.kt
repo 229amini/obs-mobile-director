@@ -3,6 +3,8 @@ package com.mostafa229.obsmobiledirector
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -10,43 +12,53 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.mostafa229.obsmobiledirector.camera.CameraCapabilityScanner
-import com.mostafa229.obsmobiledirector.camera.CameraPreview
+import com.mostafa229.obsmobiledirector.camera.CameraDescriptor
 import com.mostafa229.obsmobiledirector.camera.CameraReport
-import com.mostafa229.obsmobiledirector.ui.DirectorMode
-import com.mostafa229.obsmobiledirector.ui.DirectorModeSelector
-import com.mostafa229.obsmobiledirector.ui.StreamTargetCard
+import com.mostafa229.obsmobiledirector.stream.StreamingPipeline
+import com.mostafa229.obsmobiledirector.stream.StreamTarget
+import com.pedro.library.view.OpenGlView
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,11 +90,27 @@ private fun AppScreen() {
                 PackageManager.PERMISSION_GRANTED
         )
     }
-    var selectedMode by remember { mutableStateOf(DirectorMode.BackFull) }
+    var selectedCameraId by remember { mutableStateOf<String?>(null) }
     var report by remember { mutableStateOf<CameraReport?>(null) }
+    var showSettings by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
+    var stabilizationEnabled by remember { mutableStateOf(true) }
+    var host by remember { mutableStateOf("192.168.1.9") }
+    var port by remember { mutableStateOf("9001") }
+    var streamRunning by remember { mutableStateOf(false) }
     var streamStatus by remember {
-        mutableStateOf("Local preview is active. OBS/SRT output is not implemented in this build.")
+        mutableStateOf("Preview active. Configure OBS as an SRT listener, then start output.")
+    }
+    val mainHandler = remember { Handler(Looper.getMainLooper()) }
+    val streamingPipeline = remember {
+        StreamingPipeline { message, streaming ->
+            mainHandler.post {
+                streamStatus = message
+                if (streaming != null) {
+                    streamRunning = streaming
+                }
+            }
+        }
     }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
@@ -95,6 +123,43 @@ private fun AppScreen() {
         }
     }
 
+    LaunchedEffect(report) {
+        val cameras = report?.cameras.orEmpty()
+        if (cameras.isNotEmpty() && cameras.none { it.id == selectedCameraId }) {
+            selectedCameraId = cameras.firstOrNull { it.facing == "BACK" }?.id ?: cameras.first().id
+        }
+    }
+
+    LaunchedEffect(host, port) {
+        if (streamRunning) {
+            streamingPipeline.stop()
+            streamRunning = false
+            streamStatus = "SRT settings changed. Start output again with the new target."
+        }
+    }
+
+    LaunchedEffect(selectedCameraId) {
+        runCatching {
+            streamingPipeline.selectCamera(selectedCameraId)
+        }.onFailure { error ->
+            streamStatus = "Unable to switch camera: ${error.message ?: "camera API error"}"
+        }
+    }
+
+    LaunchedEffect(stabilizationEnabled) {
+        runCatching {
+            streamingPipeline.setStabilization(stabilizationEnabled)
+        }.onFailure { error ->
+            streamStatus = "Unable to change stabilization: ${error.message ?: "camera API error"}"
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            streamingPipeline.release()
+        }
+    }
+
     if (!hasCameraPermission) {
         PermissionScreen(onGrantPermission = {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -102,92 +167,126 @@ private fun AppScreen() {
         return
     }
 
+    val cameras = report?.cameras.orEmpty()
+    val selectedCamera = cameras.firstOrNull { it.id == selectedCameraId }
+    val parsedPort = port.toIntOrNull()
+    val streamTarget = StreamTarget(
+        host = host.trim(),
+        port = parsedPort ?: 9001
+    )
+
     Box(modifier = Modifier.fillMaxSize()) {
-        CameraPreview(
-            mode = selectedMode,
+        StreamingPreview(
+            streamingPipeline = streamingPipeline,
             modifier = Modifier.fillMaxSize()
         )
 
-        TopStatusOverlay(selectedMode = selectedMode)
+        TopStatusOverlay(
+            selectedCamera = selectedCamera,
+            streamRunning = streamRunning
+        )
 
-        Surface(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .navigationBarsPadding(),
-            color = Color(0xEE111318),
-            shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp),
-            tonalElevation = 6.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 560.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Director controls",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "${selectedMode.label} is shown in the app preview",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFB7C0C8)
-                        )
-                    }
-                    StatusPill(text = "PREVIEW")
+        CameraHudOverlay(
+            cameras = cameras,
+            selectedCameraId = selectedCameraId,
+            stabilizationEnabled = stabilizationEnabled,
+            streamRunning = streamRunning,
+            streamTarget = streamTarget,
+            streamStatus = streamStatus,
+            onCameraSelected = { camera ->
+                selectedCameraId = camera.id
+                streamStatus = "Camera ${camera.displayName()} selected for preview and SRT output."
+            },
+            onToggleStabilization = {
+                val next = !stabilizationEnabled
+                stabilizationEnabled = next
+                val state = if (next) "enabled" else "disabled"
+                streamStatus = "Hardware stabilization $state for the selected camera when supported."
+            },
+            onToggleSettings = { showSettings = !showSettings },
+            onToggleReport = {
+                val next = !showReport
+                showReport = next
+                if (next) {
+                    report = CameraCapabilityScanner(context).scan()
                 }
-
-                DirectorModeSelector(
-                    selectedMode = selectedMode,
-                    onModeSelected = {
-                        selectedMode = it
-                        streamStatus = "${it.label} selected for local preview."
+            },
+            onToggleStream = {
+                if (streamRunning) {
+                    streamingPipeline.stop()
+                    streamRunning = false
+                    streamStatus = "SRT output stopped. OBS can remain listening on ${streamTarget.listenerUri}."
+                } else if (selectedCameraId == null) {
+                    streamStatus = "Camera scan is still loading. Wait for the camera buttons, then start SRT."
+                } else if (streamTarget.host.isBlank()) {
+                    streamStatus = "Enter the OBS PC LAN IP before starting SRT output."
+                } else if (parsedPort == null || parsedPort !in 1..65535) {
+                    streamStatus = "Enter a valid UDP port from 1 to 65535."
+                } else {
+                    runCatching {
+                        streamingPipeline.start(streamTarget)
+                    }.onSuccess {
+                        streamRunning = true
+                        streamStatus = "SRT target armed: ${streamTarget.uri}. In OBS, use Media Source URL ${streamTarget.listenerUri}."
+                    }.onFailure { error ->
+                        streamRunning = false
+                        streamStatus = "Unable to start SRT: ${error.message ?: "unknown encoder error"}"
                     }
-                )
-
-                StreamTargetCard()
-
-                Text(
-                    text = streamStatus,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(
-                        onClick = {
-                            showReport = !showReport
-                            if (showReport) {
-                                report = CameraCapabilityScanner(context).scan()
-                            }
-                        }
-                    ) {
-                        Text(if (showReport) "Hide capabilities" else "Capabilities")
-                    }
-                    Button(
-                        onClick = {
-                            streamStatus = "SRT output is not active yet. This build is for camera preview and device capability validation."
-                        }
-                    ) {
-                        Text("Check OBS output")
-                    }
-                }
-
-                if (showReport) {
-                    CameraReportView(report = report)
                 }
             }
+        )
+
+        if (showSettings) {
+            SettingsPanel(
+                host = host,
+                port = port,
+                streamTarget = streamTarget,
+                onHostChanged = { host = it },
+                onPortChanged = { port = it },
+                onClose = { showSettings = false },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .widthIn(min = 320.dp, max = 420.dp)
+                    .navigationBarsPadding()
+                    .statusBarsPadding()
+                    .padding(12.dp)
+            )
+        }
+
+        if (showReport) {
+            CameraReportPanel(
+                report = report,
+                onRefresh = { report = CameraCapabilityScanner(context).scan() },
+                onClose = { showReport = false },
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight()
+                    .widthIn(min = 360.dp, max = 520.dp)
+                    .navigationBarsPadding()
+                    .statusBarsPadding()
+                    .padding(12.dp)
+            )
         }
     }
+}
+
+@Composable
+private fun StreamingPreview(
+    streamingPipeline: StreamingPipeline,
+    modifier: Modifier = Modifier
+) {
+    AndroidView(
+        modifier = modifier,
+        factory = { viewContext ->
+            OpenGlView(viewContext).also { openGlView ->
+                streamingPipeline.attachView(openGlView)
+            }
+        },
+        update = { openGlView ->
+            streamingPipeline.attachView(openGlView)
+        }
+    )
 }
 
 @Composable
@@ -217,7 +316,10 @@ private fun PermissionScreen(onGrantPermission: () -> Unit) {
 }
 
 @Composable
-private fun TopStatusOverlay(selectedMode: DirectorMode) {
+private fun TopStatusOverlay(
+    selectedCamera: CameraDescriptor?,
+    streamRunning: Boolean
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -237,13 +339,267 @@ private fun TopStatusOverlay(selectedMode: DirectorMode) {
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    text = "Local preview: ${selectedMode.label}",
+                    text = selectedCamera?.let { "Preview: ${it.displayName()}" } ?: "Scanning cameras",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color(0xFFC8D0D8)
                 )
             }
         }
-        StatusPill(text = "LOCAL")
+        StatusPill(text = if (streamRunning) "SRT" else "LOCAL")
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CameraHudOverlay(
+    cameras: List<CameraDescriptor>,
+    selectedCameraId: String?,
+    stabilizationEnabled: Boolean,
+    streamRunning: Boolean,
+    streamTarget: StreamTarget,
+    streamStatus: String,
+    onCameraSelected: (CameraDescriptor) -> Unit,
+    onToggleStabilization: () -> Unit,
+    onToggleSettings: () -> Unit,
+    onToggleReport: () -> Unit,
+    onToggleStream: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .navigationBarsPadding()
+            .padding(14.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Spacer(modifier = Modifier.height(1.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom
+        ) {
+            Surface(
+                color = Color(0xB0000000),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .widthIn(min = 280.dp, max = 560.dp)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = streamStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFDCE4EA)
+                    )
+                    Text(
+                        text = "Phone caller: ${streamTarget.uri}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color(0xFF66D9EF)
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        cameras.forEach { camera ->
+                            FilterChip(
+                                selected = camera.id == selectedCameraId,
+                                onClick = { onCameraSelected(camera) },
+                                label = { Text(camera.displayName()) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                color = Color(0xB0000000),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.End
+                ) {
+                    Button(onClick = onToggleStream) {
+                        Text(if (streamRunning) "Stop SRT" else "Start SRT")
+                    }
+                    OutlinedButton(onClick = onToggleStabilization) {
+                        Text(if (stabilizationEnabled) "Stab On" else "Stab Off")
+                    }
+                    OutlinedButton(onClick = onToggleSettings) {
+                        Text("Settings")
+                    }
+                    TextButton(onClick = onToggleReport) {
+                        Text("Cameras")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPanel(
+    host: String,
+    port: String,
+    streamTarget: StreamTarget,
+    onHostChanged: (String) -> Unit,
+    onPortChanged: (String) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        color = Color(0xF2111318),
+        shape = RoundedCornerShape(18.dp),
+        tonalElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Settings",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                TextButton(onClick = onClose) {
+                    Text("Close")
+                }
+            }
+
+            Text(
+                text = "SRT target",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = host,
+                onValueChange = onHostChanged,
+                label = { Text("OBS PC LAN IP") },
+                singleLine = true
+            )
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = port,
+                onValueChange = onPortChanged,
+                label = { Text("UDP port") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            Text(
+                text = "OBS listener URL",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = streamTarget.listenerUri,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF66D9EF)
+            )
+            Text(
+                text = "Use this URL in OBS Media Source or VLC on the PC, then start SRT from the HUD.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFCBD3DA)
+            )
+        }
+    }
+}
+
+@Composable
+private fun CameraReportPanel(
+    report: CameraReport?,
+    onRefresh: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        color = Color(0xF2111318),
+        shape = RoundedCornerShape(18.dp),
+        tonalElevation = 8.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Camera Hardware",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = onRefresh) {
+                        Text("Refresh")
+                    }
+                    TextButton(onClick = onClose) {
+                        Text("Close")
+                    }
+                }
+            }
+
+            if (report == null) {
+                Text("Scanning camera hardware...")
+                return@Column
+            }
+
+            Text("Concurrent camera sets: ${report.concurrentCameraSets.size}")
+            Text("Front cameras: ${report.cameras.count { it.facing == "FRONT" }}")
+            Text("Back cameras: ${report.cameras.count { it.facing == "BACK" }}")
+            Text("Logical multi-camera entries: ${report.cameras.count { it.isLogicalMultiCamera }}")
+
+            report.cameras.forEach { camera ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xAA1A1E24),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = camera.displayName(),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "focal=${camera.focalLengths.joinToString()} zoom=${camera.zoomRange ?: "n/a"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFCBD3DA)
+                        )
+                        Text(
+                            text = "video stab=${camera.videoStabilizationModes.joinToString()} optical=${camera.opticalStabilizationModes.joinToString()}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFCBD3DA)
+                        )
+                        if (camera.physicalCameraIds.isNotEmpty()) {
+                            Text(
+                                text = "physical IDs=${camera.physicalCameraIds.joinToString()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFCBD3DA)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -263,33 +619,8 @@ private fun StatusPill(text: String) {
     }
 }
 
-@Composable
-private fun CameraReportView(report: CameraReport?) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = "Device capability report",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-
-        if (report == null) {
-            Text("Scanning camera hardware...")
-            return
-        }
-
-        Text("Concurrent camera sets: ${report.concurrentCameraSets.size}")
-        Text("Front cameras: ${report.cameras.count { it.facing == "FRONT" }}")
-        Text("Back cameras: ${report.cameras.count { it.facing == "BACK" }}")
-        Text("Logical multi-camera entries: ${report.cameras.count { it.isLogicalMultiCamera }}")
-
-        Spacer(modifier = Modifier.height(8.dp))
-        report.cameras.forEach { camera ->
-            Text(
-                text = "Camera ${camera.id}: ${camera.facing}, stabilization modes=${camera.videoStabilizationModes.joinToString()}, focal=${camera.focalLengths.joinToString()}",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFFCBD3DA)
-            )
-        }
-    }
+private fun CameraDescriptor.displayName(): String {
+    val focal = focalLengths.firstOrNull()?.let { " ${"%.1f".format(it)}mm" } ?: ""
+    val logical = if (isLogicalMultiCamera) " logical" else ""
+    return "$facing $id$focal$logical"
 }
