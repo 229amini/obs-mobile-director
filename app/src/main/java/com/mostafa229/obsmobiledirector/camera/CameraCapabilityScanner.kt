@@ -52,7 +52,7 @@ class CameraCapabilityScanner(context: Context) {
     }
 
     private fun CameraCharacteristics.isLogicalMultiCamera(): Boolean {
-        val capabilities = get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES).orEmpty()
+        val capabilities = get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         return capabilities.contains(
             CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA
         )
@@ -85,4 +85,3 @@ class CameraCapabilityScanner(context: Context) {
             .orEmpty()
     }
 }
-
