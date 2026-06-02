@@ -47,6 +47,12 @@ At startup or before enabling director mode, check:
 - Hardware H.264 encoder availability.
 - Thermal and performance headroom during sustained capture.
 
+## Test APK Signing
+
+The project uses a committed public test keystore for debug and release test APKs. This lets sideloaded builds update normally across GitHub Actions runs.
+
+This key is not private and must not be used for production distribution.
+
 ## Product Constraints
 
 The first stable release should prioritize:

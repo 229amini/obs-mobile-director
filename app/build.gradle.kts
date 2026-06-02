@@ -12,13 +12,26 @@ android {
         applicationId = "com.mostafa229.obsmobiledirector"
         minSdk = 31
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
+    }
+
+    signingConfigs {
+        create("publicTest") {
+            storeFile = file("keystore/public-test-upload.jks")
+            storePassword = "obsmobiletest"
+            keyAlias = "obs-mobile-director-test"
+            keyPassword = "obsmobiletest"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("publicTest")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("publicTest")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

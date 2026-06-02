@@ -8,7 +8,7 @@ on:
 
 jobs:
   release-apk:
-    name: Build unsigned release APK
+    name: Build test-signed release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -35,9 +35,8 @@ jobs:
       - name: Build release APK
         run: gradle :app:assembleRelease
 
-      - name: Upload unsigned release APK
+      - name: Upload test-signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: obs-mobile-director-release-unsigned-apk
+          name: obs-mobile-director-release-test-signed-apk
           path: app/build/outputs/apk/release/*.apk
-

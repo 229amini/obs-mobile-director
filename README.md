@@ -33,7 +33,9 @@ The project is configured for GitHub Actions export. Local build requires Androi
 GitHub Actions produces:
 
 - Debug APK on every push/PR
-- Unsigned release APK on manual run or `v*` tag
+- Test-signed release APK on manual run or `v*` tag
+
+The APKs are signed with a public test key committed under `app/keystore/`. This is intentional for sideload testing so future test builds can update over previous test builds. Do not use this key for Play Store or production releases.
 
 ## OBS Direction
 
@@ -44,4 +46,3 @@ Phone app -> SRT -> OBS Media Source
 ```
 
 Two independent streams from one phone are intentionally deferred because they increase encoder load, heat, battery drain, and sync complexity.
-
