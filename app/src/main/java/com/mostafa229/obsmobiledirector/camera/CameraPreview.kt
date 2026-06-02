@@ -1,5 +1,12 @@
 package com.mostafa229.obsmobiledirector.camera
 
+import android.content.Context
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
+import android.os.Build
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -14,6 +21,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.mostafa229.obsmobiledirector.ui.DirectorMode
 
+@OptIn(ExperimentalCamera2Interop::class)
 @Composable
 fun CameraPreview(
     mode: DirectorMode,
@@ -37,6 +45,9 @@ fun CameraPreview(
     val cameraProviderFuture = remember(context) {
         ProcessCameraProvider.getInstance(context)
     }
+    val stabilizationMode = remember(context, lensFacing) {
+        preferredVideoStabilizationMode(context, lensFacing)
+    }
 
     AndroidView(
         modifier = modifier,
@@ -50,8 +61,14 @@ fun CameraPreview(
             cameraProviderFuture.addListener(
                 {
                     val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder()
-                        .build()
+                    val previewBuilder = Preview.Builder()
+                    if (stabilizationMode != null) {
+                        Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
+                            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                            stabilizationMode
+                        )
+                    }
+                    val preview = previewBuilder.build()
                         .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
                     cameraProvider.unbindAll()
@@ -72,5 +89,40 @@ fun CameraPreview(
                 cameraProviderFuture.get().unbindAll()
             }
         }
+    }
+}
+
+private fun preferredVideoStabilizationMode(
+    context: Context,
+    lensFacing: Int
+): Int? {
+    val cameraManager = context.getSystemService(CameraManager::class.java)
+    val supportedModes = cameraManager.cameraIdList
+        .map { id -> cameraManager.getCameraCharacteristics(id) }
+        .filter { characteristics ->
+            characteristics.get(CameraCharacteristics.LENS_FACING) == lensFacing
+        }
+        .flatMap { characteristics ->
+            characteristics
+                .get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
+                ?.toList()
+                .orEmpty()
+        }
+        .toSet()
+
+    val previewStabilization = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION
+    } else {
+        null
+    }
+
+    return when {
+        previewStabilization != null && supportedModes.contains(previewStabilization) -> {
+            previewStabilization
+        }
+        supportedModes.contains(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON) -> {
+            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+        }
+        else -> null
     }
 }

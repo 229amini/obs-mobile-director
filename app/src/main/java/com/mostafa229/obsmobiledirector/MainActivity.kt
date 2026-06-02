@@ -7,7 +7,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Alignment
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -286,7 +286,7 @@ private fun CameraReportView(report: CameraReport?) {
         Spacer(modifier = Modifier.height(8.dp))
         report.cameras.forEach { camera ->
             Text(
-                text = "Camera ${camera.id}: ${camera.facing}, stabilization=${camera.videoStabilizationModes.joinToString()}, focal=${camera.focalLengths.joinToString()}",
+                text = "Camera ${camera.id}: ${camera.facing}, stabilization modes=${camera.videoStabilizationModes.joinToString()}, focal=${camera.focalLengths.joinToString()}",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFCBD3DA)
             )
