@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.mostafa229.obsmobiledirector.camera.CameraCapabilityScanner
+import com.mostafa229.obsmobiledirector.camera.CameraPreview
 import com.mostafa229.obsmobiledirector.camera.CameraReport
 import com.mostafa229.obsmobiledirector.ui.DirectorMode
 import com.mostafa229.obsmobiledirector.ui.DirectorModeSelector
@@ -63,6 +64,9 @@ private fun AppScreen() {
     }
     var selectedMode by remember { mutableStateOf(DirectorMode.BackFull) }
     var report by remember { mutableStateOf<CameraReport?>(null) }
+    var streamStatus by remember {
+        mutableStateOf("Preview build. SRT output is not implemented yet.")
+    }
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { granted -> hasCameraPermission = granted }
@@ -103,7 +107,15 @@ private fun AppScreen() {
             onModeSelected = { selectedMode = it }
         )
 
+        CameraPreview(mode = selectedMode)
+
         StreamTargetCard()
+
+        Text(
+            text = streamStatus,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium
+        )
 
         CameraReportView(report = report)
 
@@ -111,8 +123,12 @@ private fun AppScreen() {
             OutlinedButton(onClick = { report = CameraCapabilityScanner(context).scan() }) {
                 Text("Refresh capabilities")
             }
-            Button(onClick = { /* Streaming pipeline is implemented after capability validation. */ }) {
-                Text("Start stream")
+            Button(
+                onClick = {
+                    streamStatus = "SRT streaming is not active in this build. Next milestone is encoder + SRT transport."
+                }
+            ) {
+                Text("Check stream readiness")
             }
         }
     }
@@ -147,4 +163,3 @@ private fun CameraReportView(report: CameraReport?) {
         }
     }
 }
-
