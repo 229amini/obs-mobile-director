@@ -34,11 +34,7 @@ class StreamingPipeline(
             return
         }
         attachedView = openGlView
-        if (srtCamera == null) {
-            srtCamera = SrtCamera2(openGlView, connectChecker)
-        } else {
-            srtCamera?.replaceView(openGlView)
-        }
+        ensureCamera()
         prepareIfNeeded()
         currentCameraId?.let { startPreview(it) }
         applyStabilization()
@@ -65,28 +61,69 @@ class StreamingPipeline(
     fun start(target: StreamTarget) {
         check(target.host.isNotBlank()) { "Stream host is required." }
         check(target.port in 1..65535) { "Stream port must be between 1 and 65535." }
-        val camera = srtCamera ?: error("Stream preview is not ready yet.")
-        prepareIfNeeded()
-        currentCameraId?.let { startPreview(it) }
-        applyStabilization()
-        if (!camera.isStreaming) {
-            camera.startStream(target.uri)
+        try {
+            val camera = ensureCamera()
+            prepareIfNeeded()
+            currentCameraId?.let { startPreview(it) }
+            applyStabilization()
+            if (!camera.isStreaming) {
+                camera.startStream(target.uri)
+            }
+            activeTarget = target
+        } catch (error: Throwable) {
+            activeTarget = null
+            resetCameraForNextStream()
+            throw error
         }
-        activeTarget = target
     }
 
     fun stop() {
         srtCamera?.takeIf { it.isStreaming }?.stopStream()
         activeTarget = null
+        resetCameraForNextStream()
     }
 
     fun release() {
-        stop()
-        srtCamera?.stopPreview()
+        runCatching {
+            srtCamera?.takeIf { it.isStreaming }?.stopStream()
+            srtCamera?.stopPreview()
+        }
+        activeTarget = null
         srtCamera = null
         attachedView = null
         prepared = false
         currentCameraId = null
+    }
+
+    private fun ensureCamera(): SrtCamera2 {
+        val openGlView = attachedView ?: error("Stream preview is not ready yet.")
+        return srtCamera?.also { it.replaceView(openGlView) } ?: SrtCamera2(
+            openGlView,
+            connectChecker
+        ).also { camera ->
+            srtCamera = camera
+            prepared = false
+        }
+    }
+
+    private fun resetCameraForNextStream() {
+        val openGlView = attachedView ?: run {
+            prepared = false
+            return
+        }
+        runCatching {
+            srtCamera?.takeIf { it.isStreaming }?.stopStream()
+            srtCamera?.stopPreview()
+        }
+        srtCamera = SrtCamera2(openGlView, connectChecker)
+        prepared = false
+        runCatching {
+            prepareIfNeeded()
+            currentCameraId?.let { startPreview(it) }
+            applyStabilization()
+        }.onFailure { error ->
+            onStatus("Preview recovery failed: ${error.message ?: "camera API error"}", false)
+        }
     }
 
     private fun prepareIfNeeded() {
@@ -142,6 +179,7 @@ class StreamingPipeline(
 
         override fun onConnectionFailed(reason: String) {
             activeTarget = null
+            resetCameraForNextStream()
             onStatus("SRT connection failed: $reason", false)
         }
 

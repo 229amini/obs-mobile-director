@@ -15,6 +15,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -26,10 +27,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 fun CameraPreview(
     cameraId: String?,
     stabilizationEnabled: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onError: (Throwable) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val currentOnError = rememberUpdatedState(onError)
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
     val cameraSelector = remember(cameraId) {
         if (cameraId == null) {
@@ -66,21 +69,25 @@ fun CameraPreview(
         update = { previewView ->
             cameraProviderFuture.addListener(
                 {
-                    val cameraProvider = cameraProviderFuture.get()
-                    val previewBuilder = Preview.Builder()
-                    Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
-                        CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                        stabilizationMode
-                    )
-                    val preview = previewBuilder.build()
-                        .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+                    runCatching {
+                        val cameraProvider = cameraProviderFuture.get()
+                        val previewBuilder = Preview.Builder()
+                        Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
+                            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                            stabilizationMode
+                        )
+                        val preview = previewBuilder.build()
+                            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
-                        lifecycleOwner,
-                        cameraSelector,
-                        preview
-                    )
+                        cameraProvider.unbindAll()
+                        cameraProvider.bindToLifecycle(
+                            lifecycleOwner,
+                            cameraSelector,
+                            preview
+                        )
+                    }.onFailure { error ->
+                        currentOnError.value(error)
+                    }
                 },
                 executor
             )

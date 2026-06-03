@@ -4,6 +4,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val resolvedVersionCode = (
+    providers.gradleProperty("VERSION_CODE").orNull
+        ?: providers.environmentVariable("GITHUB_RUN_NUMBER").orNull
+        ?: "4"
+).toIntOrNull()?.coerceAtLeast(4) ?: 4
+
+val resolvedVersionName = providers.gradleProperty("VERSION_NAME").orNull
+    ?: providers.environmentVariable("VERSION_NAME").orNull
+    ?: "0.1.3"
+
 android {
     namespace = "com.mostafa229.obsmobiledirector"
     compileSdk = 35
@@ -12,8 +22,8 @@ android {
         applicationId = "com.mostafa229.obsmobiledirector"
         minSdk = 31
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
     }
 
     signingConfigs {

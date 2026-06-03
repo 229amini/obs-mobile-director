@@ -5,10 +5,12 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,6 +38,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -53,6 +58,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.mostafa229.obsmobiledirector.camera.CameraPreview
 import com.mostafa229.obsmobiledirector.camera.CameraCapabilityScanner
 import com.mostafa229.obsmobiledirector.camera.CameraDescriptor
 import com.mostafa229.obsmobiledirector.camera.CameraReport
@@ -63,6 +69,7 @@ import com.pedro.library.view.OpenGlView
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -95,6 +102,7 @@ private fun AppScreen() {
     var showSettings by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
     var stabilizationEnabled by remember { mutableStateOf(true) }
+    var pipEnabled by remember { mutableStateOf(false) }
     var host by remember { mutableStateOf("192.168.1.9") }
     var port by remember { mutableStateOf("9001") }
     var streamRunning by remember { mutableStateOf(false) }
@@ -168,7 +176,19 @@ private fun AppScreen() {
     }
 
     val cameras = report?.cameras.orEmpty()
-    val selectedCamera = cameras.firstOrNull { it.id == selectedCameraId }
+    val selectedCameraIdValue = selectedCameraId
+    val selectedCamera = cameras.firstOrNull { it.id == selectedCameraIdValue }
+    val concurrentCameraSets = report?.concurrentCameraSets.orEmpty()
+    val secondaryCamera = if (pipEnabled && selectedCameraIdValue != null) {
+        selectSecondaryCamera(
+            cameras = cameras,
+            selectedCameraId = selectedCameraIdValue,
+            selectedFacing = selectedCamera?.facing,
+            concurrentCameraSets = concurrentCameraSets
+        )
+    } else {
+        null
+    }
     val parsedPort = port.toIntOrNull()
     val streamTarget = StreamTarget(
         host = host.trim(),
@@ -186,12 +206,28 @@ private fun AppScreen() {
             streamRunning = streamRunning
         )
 
+        secondaryCamera?.let { camera ->
+            SecondaryCameraPip(
+                camera = camera,
+                stabilizationEnabled = stabilizationEnabled,
+                onBindError = { error ->
+                    pipEnabled = false
+                    streamStatus = "PiP camera unavailable: ${error.message ?: "camera API error"}"
+                },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 14.dp)
+                    .fillMaxWidth(0.24f)
+                    .aspectRatio(16f / 9f)
+            )
+        }
+
         CameraHudOverlay(
             cameras = cameras,
             selectedCameraId = selectedCameraId,
             stabilizationEnabled = stabilizationEnabled,
+            pipEnabled = pipEnabled,
             streamRunning = streamRunning,
-            streamTarget = streamTarget,
             streamStatus = streamStatus,
             onCameraSelected = { camera ->
                 selectedCameraId = camera.id
@@ -202,6 +238,24 @@ private fun AppScreen() {
                 stabilizationEnabled = next
                 val state = if (next) "enabled" else "disabled"
                 streamStatus = "Hardware stabilization $state for the selected camera when supported."
+            },
+            onTogglePip = {
+                val next = !pipEnabled
+                val hasSupportedSecondary = selectedCameraIdValue != null &&
+                    selectSecondaryCamera(
+                        cameras = cameras,
+                        selectedCameraId = selectedCameraIdValue,
+                        selectedFacing = selectedCamera?.facing,
+                        concurrentCameraSets = concurrentCameraSets
+                    ) != null
+                pipEnabled = next && hasSupportedSecondary
+                streamStatus = if (next && hasSupportedSecondary) {
+                    "PiP overlay enabled. The next camera is shown as a rounded 1/4 preview."
+                } else if (next) {
+                    "PiP needs a supported concurrent camera pair on this device."
+                } else {
+                    "PiP overlay disabled."
+                }
             },
             onToggleSettings = { showSettings = !showSettings },
             onToggleReport = {
@@ -290,6 +344,70 @@ private fun StreamingPreview(
 }
 
 @Composable
+private fun SecondaryCameraPip(
+    camera: CameraDescriptor,
+    stabilizationEnabled: Boolean,
+    onBindError: (Throwable) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        color = Color.Black,
+        shape = RoundedCornerShape(18.dp),
+        border = BorderStroke(1.dp, Color(0x80FFFFFF)),
+        shadowElevation = 12.dp
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            CameraPreview(
+                cameraId = camera.id,
+                stabilizationEnabled = stabilizationEnabled,
+                modifier = Modifier.fillMaxSize(),
+                onError = onBindError
+            )
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp),
+                color = Color(0x99000000),
+                shape = RoundedCornerShape(999.dp)
+            ) {
+                Text(
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    text = camera.shortName(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactSwitchRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier.width(132.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = Color(0xFFDCE4EA)
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = { onToggle() },
+            enabled = enabled
+        )
+    }
+}
+
+@Composable
 private fun PermissionScreen(onGrantPermission: () -> Unit) {
     Column(
         modifier = Modifier
@@ -355,11 +473,12 @@ private fun CameraHudOverlay(
     cameras: List<CameraDescriptor>,
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
+    pipEnabled: Boolean,
     streamRunning: Boolean,
-    streamTarget: StreamTarget,
     streamStatus: String,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
+    onTogglePip: () -> Unit,
     onToggleSettings: () -> Unit,
     onToggleReport: () -> Unit,
     onToggleStream: () -> Unit
@@ -379,33 +498,28 @@ private fun CameraHudOverlay(
         ) {
             Surface(
                 color = Color(0xB0000000),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Column(
                     modifier = Modifier
-                        .widthIn(min = 280.dp, max = 560.dp)
-                        .padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .widthIn(min = 260.dp, max = 460.dp)
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     Text(
                         text = streamStatus,
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFDCE4EA)
                     )
-                    Text(
-                        text = "Phone caller: ${streamTarget.uri}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color(0xFF66D9EF)
-                    )
                     FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         cameras.forEach { camera ->
                             FilterChip(
                                 selected = camera.id == selectedCameraId,
                                 onClick = { onCameraSelected(camera) },
-                                label = { Text(camera.displayName()) }
+                                label = { Text(camera.shortName()) }
                             )
                         }
                     }
@@ -414,24 +528,35 @@ private fun CameraHudOverlay(
 
             Surface(
                 color = Color(0xB0000000),
-                shape = RoundedCornerShape(16.dp)
+                shape = RoundedCornerShape(12.dp)
             ) {
                 Column(
-                    modifier = Modifier.padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.End
                 ) {
                     Button(onClick = onToggleStream) {
-                        Text(if (streamRunning) "Stop SRT" else "Start SRT")
+                        Text(if (streamRunning) "Stop" else "Start")
                     }
-                    OutlinedButton(onClick = onToggleStabilization) {
-                        Text(if (stabilizationEnabled) "Stab On" else "Stab Off")
-                    }
-                    OutlinedButton(onClick = onToggleSettings) {
-                        Text("Settings")
-                    }
-                    TextButton(onClick = onToggleReport) {
-                        Text("Cameras")
+                    CompactSwitchRow(
+                        label = "PiP",
+                        checked = pipEnabled,
+                        enabled = cameras.size > 1,
+                        onToggle = onTogglePip
+                    )
+                    CompactSwitchRow(
+                        label = "Stab",
+                        checked = stabilizationEnabled,
+                        enabled = true,
+                        onToggle = onToggleStabilization
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = onToggleSettings) {
+                            Text("Settings")
+                        }
+                        TextButton(onClick = onToggleReport) {
+                            Text("Cameras")
+                        }
                     }
                 }
             }
@@ -623,4 +748,31 @@ private fun CameraDescriptor.displayName(): String {
     val focal = focalLengths.firstOrNull()?.let { " ${"%.1f".format(it)}mm" } ?: ""
     val logical = if (isLogicalMultiCamera) " logical" else ""
     return "$facing $id$focal$logical"
+}
+
+private fun CameraDescriptor.shortName(): String {
+    val facingName = when (facing) {
+        "BACK" -> "Rear"
+        "FRONT" -> "Front"
+        else -> facing.lowercase().replaceFirstChar { it.uppercase() }
+    }
+    return "$facingName $id"
+}
+
+private fun selectSecondaryCamera(
+    cameras: List<CameraDescriptor>,
+    selectedCameraId: String,
+    selectedFacing: String?,
+    concurrentCameraSets: List<List<String>>
+): CameraDescriptor? {
+    val supportedCameraIds = concurrentCameraSets
+        .filter { it.contains(selectedCameraId) }
+        .flatten()
+        .filter { it != selectedCameraId }
+        .toSet()
+    if (supportedCameraIds.isEmpty()) return null
+
+    return cameras.firstOrNull { camera ->
+        camera.id in supportedCameraIds && camera.facing != selectedFacing
+    } ?: cameras.firstOrNull { it.id in supportedCameraIds }
 }

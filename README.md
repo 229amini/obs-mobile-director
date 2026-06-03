@@ -37,6 +37,12 @@ GitHub Actions produces:
 
 The APKs are signed with a public test key committed under `app/keystore/`. This is intentional for sideload testing so future test builds can update over previous test builds. Do not use this key for Play Store or production releases.
 
+For sideload updates to install over the previous APK, keep the same
+`applicationId`, keep using the same signing key, and increase `versionCode`.
+The Gradle config accepts `VERSION_CODE` / `VERSION_NAME` project properties
+and also uses `GITHUB_RUN_NUMBER` in Actions so CI builds move forward
+automatically.
+
 ## OBS Direction
 
 The first stable transport target is one composited stream:
