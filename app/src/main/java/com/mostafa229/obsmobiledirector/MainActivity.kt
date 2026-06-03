@@ -10,7 +10,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -51,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +69,7 @@ import com.mostafa229.obsmobiledirector.camera.CameraReport
 import com.mostafa229.obsmobiledirector.stream.StreamingPipeline
 import com.mostafa229.obsmobiledirector.stream.StreamTarget
 import com.pedro.library.view.OpenGlView
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -103,6 +108,8 @@ private fun AppScreen() {
     var showReport by remember { mutableStateOf(false) }
     var stabilizationEnabled by remember { mutableStateOf(true) }
     var pipEnabled by remember { mutableStateOf(false) }
+    var controlsHidden by remember { mutableStateOf(false) }
+    var cameraSwitching by remember { mutableStateOf(false) }
     var host by remember { mutableStateOf("192.168.1.9") }
     var port by remember { mutableStateOf("9001") }
     var streamRunning by remember { mutableStateOf(false) }
@@ -147,11 +154,14 @@ private fun AppScreen() {
     }
 
     LaunchedEffect(selectedCameraId) {
+        cameraSwitching = selectedCameraId != null
         runCatching {
             streamingPipeline.selectCamera(selectedCameraId)
         }.onFailure { error ->
             streamStatus = "Unable to switch camera: ${error.message ?: "camera API error"}"
         }
+        delay(350)
+        cameraSwitching = false
     }
 
     LaunchedEffect(stabilizationEnabled) {
@@ -179,6 +189,18 @@ private fun AppScreen() {
     val selectedCameraIdValue = selectedCameraId
     val selectedCamera = cameras.firstOrNull { it.id == selectedCameraIdValue }
     val concurrentCameraSets = report?.concurrentCameraSets.orEmpty()
+    val pipSelectableCameraIds = if (pipEnabled) {
+        cameras.filter { camera ->
+            selectSecondaryCamera(
+                cameras = cameras,
+                selectedCameraId = camera.id,
+                selectedFacing = camera.facing,
+                concurrentCameraSets = concurrentCameraSets
+            ) != null
+        }.map { it.id }.toSet()
+    } else {
+        cameras.map { it.id }.toSet()
+    }
     val secondaryCamera = if (pipEnabled && selectedCameraIdValue != null) {
         selectSecondaryCamera(
             cameras = cameras,
@@ -215,9 +237,9 @@ private fun AppScreen() {
                     streamStatus = "PiP camera unavailable: ${error.message ?: "camera API error"}"
                 },
                 modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 14.dp)
-                    .fillMaxWidth(0.24f)
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 72.dp, bottom = 92.dp)
+                    .fillMaxWidth(0.32f)
                     .aspectRatio(16f / 9f)
             )
         }
@@ -227,11 +249,21 @@ private fun AppScreen() {
             selectedCameraId = selectedCameraId,
             stabilizationEnabled = stabilizationEnabled,
             pipEnabled = pipEnabled,
+            controlsHidden = controlsHidden,
             streamRunning = streamRunning,
             streamStatus = streamStatus,
+            isCameraEnabled = { camera ->
+                !cameraSwitching && camera.id in pipSelectableCameraIds
+            },
             onCameraSelected = { camera ->
-                selectedCameraId = camera.id
-                streamStatus = "Camera ${camera.displayName()} selected for preview and SRT output."
+                if (cameraSwitching) {
+                    streamStatus = "Camera switch is still settling."
+                } else if (camera.id !in pipSelectableCameraIds) {
+                    streamStatus = "That camera is disabled while PiP is on because it has no supported secondary pair."
+                } else {
+                    selectedCameraId = camera.id
+                    streamStatus = "Camera ${camera.displayName()} selected for preview and SRT output."
+                }
             },
             onToggleStabilization = {
                 val next = !stabilizationEnabled
@@ -258,6 +290,7 @@ private fun AppScreen() {
                 }
             },
             onToggleSettings = { showSettings = !showSettings },
+            onToggleControls = { controlsHidden = !controlsHidden },
             onToggleReport = {
                 val next = !showReport
                 showReport = next
@@ -350,14 +383,20 @@ private fun SecondaryCameraPip(
     onBindError: (Throwable) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val shape = RoundedCornerShape(18.dp)
     Surface(
         modifier = modifier,
         color = Color.Black,
-        shape = RoundedCornerShape(18.dp),
+        shape = shape,
         border = BorderStroke(1.dp, Color(0x80FFFFFF)),
         shadowElevation = 12.dp
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(shape)
+                .background(Color.Black)
+        ) {
             CameraPreview(
                 cameraId = camera.id,
                 stabilizationEnabled = stabilizationEnabled,
@@ -474,15 +513,23 @@ private fun CameraHudOverlay(
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
     pipEnabled: Boolean,
+    controlsHidden: Boolean,
     streamRunning: Boolean,
     streamStatus: String,
+    isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
     onTogglePip: () -> Unit,
     onToggleSettings: () -> Unit,
+    onToggleControls: () -> Unit,
     onToggleReport: () -> Unit,
     onToggleStream: () -> Unit
 ) {
+    val controlsOffset by animateDpAsState(
+        targetValue = if (controlsHidden) 170.dp else 0.dp,
+        label = "controlsOffset"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -516,9 +563,11 @@ private fun CameraHudOverlay(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         cameras.forEach { camera ->
+                            val enabled = isCameraEnabled(camera)
                             FilterChip(
                                 selected = camera.id == selectedCameraId,
                                 onClick = { onCameraSelected(camera) },
+                                enabled = enabled,
                                 label = { Text(camera.shortName()) }
                             )
                         }
@@ -526,36 +575,57 @@ private fun CameraHudOverlay(
                 }
             }
 
-            Surface(
-                color = Color(0xB0000000),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    horizontalAlignment = Alignment.End
+            Box(contentAlignment = Alignment.BottomEnd) {
+                Surface(
+                    modifier = Modifier.offset(x = controlsOffset),
+                    color = Color(0xB0000000),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Button(onClick = onToggleStream) {
-                        Text(if (streamRunning) "Stop" else "Start")
-                    }
-                    CompactSwitchRow(
-                        label = "PiP",
-                        checked = pipEnabled,
-                        enabled = cameras.size > 1,
-                        onToggle = onTogglePip
-                    )
-                    CompactSwitchRow(
-                        label = "Stab",
-                        checked = stabilizationEnabled,
-                        enabled = true,
-                        onToggle = onToggleStabilization
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        OutlinedButton(onClick = onToggleSettings) {
-                            Text("Settings")
+                    Column(
+                        modifier = Modifier.padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = onToggleControls) {
+                                Text("Hide")
+                            }
+                            Button(onClick = onToggleStream) {
+                                Text(if (streamRunning) "Stop" else "Start")
+                            }
                         }
-                        TextButton(onClick = onToggleReport) {
-                            Text("Cameras")
+                        CompactSwitchRow(
+                            label = "PiP",
+                            checked = pipEnabled,
+                            enabled = cameras.size > 1,
+                            onToggle = onTogglePip
+                        )
+                        CompactSwitchRow(
+                            label = "Stab",
+                            checked = stabilizationEnabled,
+                            enabled = true,
+                            onToggle = onToggleStabilization
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(onClick = onToggleSettings) {
+                                Text("Settings")
+                            }
+                            TextButton(onClick = onToggleReport) {
+                                Text("Cameras")
+                            }
+                        }
+                    }
+                }
+                if (controlsHidden) {
+                    Surface(
+                        color = Color(0xB0000000),
+                        shape = RoundedCornerShape(999.dp)
+                    ) {
+                        TextButton(onClick = onToggleControls) {
+                            Text("Show")
                         }
                     }
                 }

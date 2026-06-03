@@ -7,7 +7,9 @@ data class StreamTarget(
 ) {
     val uri: String
         get() = when (protocol) {
-            StreamProtocol.Srt -> "srt://$host:$port?mode=caller"
+            StreamProtocol.Srt -> {
+                "srt://$host:$port?mode=caller&latency=200000&timeout=5000000"
+            }
         }
 
     val listenerUri: String

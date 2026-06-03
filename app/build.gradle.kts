@@ -7,12 +7,12 @@ plugins {
 val resolvedVersionCode = (
     providers.gradleProperty("VERSION_CODE").orNull
         ?: providers.environmentVariable("GITHUB_RUN_NUMBER").orNull
-        ?: "4"
-).toIntOrNull()?.coerceAtLeast(4) ?: 4
+        ?: "5"
+).toIntOrNull()?.coerceAtLeast(5) ?: 5
 
 val resolvedVersionName = providers.gradleProperty("VERSION_NAME").orNull
     ?: providers.environmentVariable("VERSION_NAME").orNull
-    ?: "0.1.3"
+    ?: "0.1.4"
 
 android {
     namespace = "com.mostafa229.obsmobiledirector"
@@ -82,6 +82,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-video:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
+    implementation("androidx.compose.animation:animation")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.runtime:runtime")

@@ -1,5 +1,7 @@
 package com.mostafa229.obsmobiledirector.stream
 
+import android.os.Handler
+import android.os.Looper
 import com.pedro.common.ConnectChecker
 import com.pedro.library.srt.SrtCamera2
 import com.pedro.library.view.OpenGlView
@@ -24,6 +26,9 @@ class StreamingPipeline(
     private var prepared = false
     private var currentCameraId: String? = null
     private var stabilizationEnabled = false
+    private var connectionAttempt = 0
+    private var connected = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val settings = StreamSettings()
 
     fun attachView(openGlView: OpenGlView) {
@@ -70,6 +75,8 @@ class StreamingPipeline(
                 camera.startStream(target.uri)
             }
             activeTarget = target
+            connected = false
+            scheduleConnectionTimeout(++connectionAttempt)
         } catch (error: Throwable) {
             activeTarget = null
             resetCameraForNextStream()
@@ -78,6 +85,8 @@ class StreamingPipeline(
     }
 
     fun stop() {
+        connectionAttempt++
+        connected = false
         srtCamera?.takeIf { it.isStreaming }?.stopStream()
         activeTarget = null
         resetCameraForNextStream()
@@ -89,6 +98,8 @@ class StreamingPipeline(
             srtCamera?.stopPreview()
         }
         activeTarget = null
+        connectionAttempt++
+        connected = false
         srtCamera = null
         attachedView = null
         prepared = false
@@ -124,6 +135,24 @@ class StreamingPipeline(
         }.onFailure { error ->
             onStatus("Preview recovery failed: ${error.message ?: "camera API error"}", false)
         }
+    }
+
+    private fun scheduleConnectionTimeout(attempt: Int) {
+        mainHandler.postDelayed(
+            {
+                val camera = srtCamera ?: return@postDelayed
+                if (attempt == connectionAttempt && !connected && camera.isStreaming) {
+                    val timedOutTarget = activeTarget
+                    activeTarget = null
+                    resetCameraForNextStream()
+                    onStatus(
+                        "OBS did not accept SRT within 8 seconds. Check that OBS Media Source is listening on ${timedOutTarget?.listenerUri ?: "the selected port"}.",
+                        false
+                    )
+                }
+            },
+            8_000L
+        )
     }
 
     private fun prepareIfNeeded() {
@@ -170,25 +199,33 @@ class StreamingPipeline(
 
     private val connectChecker = object : ConnectChecker {
         override fun onConnectionStarted(url: String) {
+            connected = false
             onStatus("Connecting to OBS: $url", null)
         }
 
         override fun onConnectionSuccess() {
+            connected = true
             onStatus("SRT live. OBS should now show the phone feed.", true)
         }
 
         override fun onConnectionFailed(reason: String) {
             activeTarget = null
+            connectionAttempt++
+            connected = false
             resetCameraForNextStream()
             onStatus("SRT connection failed: $reason", false)
         }
 
         override fun onDisconnect() {
             activeTarget = null
+            connectionAttempt++
+            connected = false
             onStatus("SRT disconnected.", false)
         }
 
         override fun onAuthError() {
+            connectionAttempt++
+            connected = false
             onStatus("SRT authentication failed.", false)
         }
 
@@ -197,6 +234,7 @@ class StreamingPipeline(
         }
 
         override fun onNewBitrate(bitrate: Long) {
+            connected = true
             onStatus("SRT live: ${bitrate / 1000} Kbps upload.", true)
         }
     }
