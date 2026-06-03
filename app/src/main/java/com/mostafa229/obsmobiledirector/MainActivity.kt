@@ -11,7 +11,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -388,7 +387,6 @@ private fun SecondaryCameraPip(
         modifier = modifier,
         color = Color.Black,
         shape = shape,
-        border = BorderStroke(1.dp, Color(0x80FFFFFF)),
         shadowElevation = 12.dp
     ) {
         Box(
@@ -403,20 +401,30 @@ private fun SecondaryCameraPip(
                 modifier = Modifier.fillMaxSize(),
                 onError = onBindError
             )
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(8.dp),
-                color = Color(0x99000000),
-                shape = RoundedCornerShape(999.dp)
-            ) {
-                Text(
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                    text = camera.shortName(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = Color.White
-                )
-            }
+        }
+    }
+}
+
+@Composable
+private fun ArrowTab(
+    label: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        color = Color(0xB0000000),
+        shape = RoundedCornerShape(999.dp)
+    ) {
+        TextButton(
+            modifier = Modifier
+                .width(36.dp)
+                .height(52.dp),
+            onClick = onClick
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
@@ -526,7 +534,7 @@ private fun CameraHudOverlay(
     onToggleStream: () -> Unit
 ) {
     val controlsOffset by animateDpAsState(
-        targetValue = if (controlsHidden) 170.dp else 0.dp,
+        targetValue = if (controlsHidden) 156.dp else 0.dp,
         label = "controlsOffset"
     )
 
@@ -576,56 +584,47 @@ private fun CameraHudOverlay(
             }
 
             Box(contentAlignment = Alignment.BottomEnd) {
-                Surface(
+                Row(
                     modifier = Modifier.offset(x = controlsOffset),
-                    color = Color(0xB0000000),
-                    shape = RoundedCornerShape(12.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
-                        modifier = Modifier.padding(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        horizontalAlignment = Alignment.End
+                    ArrowTab(
+                        label = if (controlsHidden) "<" else ">",
+                        onClick = onToggleControls
+                    )
+                    Surface(
+                        color = Color(0xB0000000),
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            modifier = Modifier.padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            horizontalAlignment = Alignment.End
                         ) {
-                            TextButton(onClick = onToggleControls) {
-                                Text("Hide")
-                            }
                             Button(onClick = onToggleStream) {
                                 Text(if (streamRunning) "Stop" else "Start")
                             }
-                        }
-                        CompactSwitchRow(
-                            label = "PiP",
-                            checked = pipEnabled,
-                            enabled = cameras.size > 1,
-                            onToggle = onTogglePip
-                        )
-                        CompactSwitchRow(
-                            label = "Stab",
-                            checked = stabilizationEnabled,
-                            enabled = true,
-                            onToggle = onToggleStabilization
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(onClick = onToggleSettings) {
-                                Text("Settings")
+                            CompactSwitchRow(
+                                label = "PiP",
+                                checked = pipEnabled,
+                                enabled = cameras.size > 1,
+                                onToggle = onTogglePip
+                            )
+                            CompactSwitchRow(
+                                label = "Stab",
+                                checked = stabilizationEnabled,
+                                enabled = true,
+                                onToggle = onToggleStabilization
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(onClick = onToggleSettings) {
+                                    Text("Settings")
+                                }
+                                TextButton(onClick = onToggleReport) {
+                                    Text("Cameras")
+                                }
                             }
-                            TextButton(onClick = onToggleReport) {
-                                Text("Cameras")
-                            }
-                        }
-                    }
-                }
-                if (controlsHidden) {
-                    Surface(
-                        color = Color(0xB0000000),
-                        shape = RoundedCornerShape(999.dp)
-                    ) {
-                        TextButton(onClick = onToggleControls) {
-                            Text("Show")
                         }
                     }
                 }
