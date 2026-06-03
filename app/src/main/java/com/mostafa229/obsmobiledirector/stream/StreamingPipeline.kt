@@ -26,6 +26,7 @@ class StreamingPipeline(
     private var prepared = false
     private var currentCameraId: String? = null
     private var stabilizationEnabled = false
+    private var currentZoom = 1f
     private var connectionAttempt = 0
     private var connected = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -55,12 +56,38 @@ class StreamingPipeline(
         } else {
             startPreview(cameraId)
         }
+        setZoomRatio(currentZoom)
         applyStabilization()
     }
 
     fun setStabilization(enabled: Boolean) {
         stabilizationEnabled = enabled
         applyStabilization()
+    }
+
+    fun setZoomRatio(zoom: Float, preferOptical: Boolean = false) {
+        currentZoom = zoom.coerceIn(0.5f, 20f)
+        val camera = srtCamera ?: return
+        runCatching {
+            if (preferOptical) {
+                val opticalZoom = readOpticalZooms(camera)
+                    .filter { it > 1f }
+                    .minByOrNull { kotlin.math.abs(it - currentZoom) }
+                if (
+                    opticalZoom != null &&
+                    kotlin.math.abs(opticalZoom - currentZoom) <= 0.75f &&
+                    invokeZoom(camera, "setOpticalZoom", opticalZoom)
+                ) {
+                    return
+                } else {
+                    invokeZoom(camera, "setZoom", currentZoom)
+                }
+            } else {
+                invokeZoom(camera, "setZoom", currentZoom)
+            }
+        }.onFailure {
+            invokeZoom(camera, "setZoom", currentZoom)
+        }
     }
 
     fun start(target: StreamTarget) {
@@ -70,6 +97,7 @@ class StreamingPipeline(
             val camera = ensureCamera()
             prepareIfNeeded()
             currentCameraId?.let { startPreview(it) }
+            setZoomRatio(currentZoom)
             applyStabilization()
             if (!camera.isStreaming) {
                 camera.startStream(target.uri)
@@ -131,6 +159,7 @@ class StreamingPipeline(
         runCatching {
             prepareIfNeeded()
             currentCameraId?.let { startPreview(it) }
+            setZoomRatio(currentZoom)
             applyStabilization()
         }.onFailure { error ->
             onStatus("Preview recovery failed: ${error.message ?: "camera API error"}", false)
@@ -153,6 +182,38 @@ class StreamingPipeline(
             },
             8_000L
         )
+    }
+
+    private fun readOpticalZooms(camera: SrtCamera2): List<Float> {
+        return runCatching {
+            val value = camera.javaClass.methods
+                .firstOrNull { it.name == "getOpticalZooms" && it.parameterTypes.isEmpty() }
+                ?.invoke(camera)
+            when (value) {
+                is FloatArray -> value.toList()
+                is DoubleArray -> value.map { it.toFloat() }
+                is IntArray -> value.map { it.toFloat() }
+                is Iterable<*> -> value.mapNotNull { (it as? Number)?.toFloat() }
+                else -> emptyList()
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun invokeZoom(camera: SrtCamera2, methodName: String, zoom: Float): Boolean {
+        val methods = camera.javaClass.methods.filter { it.name == methodName && it.parameterTypes.size == 1 }
+        return methods.any { method ->
+            runCatching {
+                val parameterType = method.parameterTypes.first()
+                val value = when (parameterType) {
+                    java.lang.Float.TYPE, java.lang.Float::class.java -> zoom
+                    java.lang.Double.TYPE, java.lang.Double::class.java -> zoom.toDouble()
+                    java.lang.Integer.TYPE, java.lang.Integer::class.java -> zoom.toInt()
+                    java.lang.Long.TYPE, java.lang.Long::class.java -> zoom.toLong()
+                    else -> zoom
+                }
+                method.invoke(camera, value)
+            }.isSuccess
+        }
     }
 
     private fun prepareIfNeeded() {

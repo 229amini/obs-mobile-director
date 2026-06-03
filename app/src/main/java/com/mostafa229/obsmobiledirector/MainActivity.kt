@@ -109,6 +109,7 @@ private fun AppScreen() {
     var pipEnabled by remember { mutableStateOf(false) }
     var controlsHidden by remember { mutableStateOf(false) }
     var cameraSwitching by remember { mutableStateOf(false) }
+    var zoomRatio by remember { mutableStateOf(1f) }
     var host by remember { mutableStateOf("192.168.1.9") }
     var port by remember { mutableStateOf("9001") }
     var streamRunning by remember { mutableStateOf(false) }
@@ -154,8 +155,10 @@ private fun AppScreen() {
 
     LaunchedEffect(selectedCameraId) {
         cameraSwitching = selectedCameraId != null
+        zoomRatio = 1f
         runCatching {
             streamingPipeline.selectCamera(selectedCameraId)
+            streamingPipeline.setZoomRatio(1f)
         }.onFailure { error ->
             streamStatus = "Unable to switch camera: ${error.message ?: "camera API error"}"
         }
@@ -187,6 +190,8 @@ private fun AppScreen() {
     val cameras = report?.cameras.orEmpty()
     val selectedCameraIdValue = selectedCameraId
     val selectedCamera = cameras.firstOrNull { it.id == selectedCameraIdValue }
+    val zoomMin = selectedCamera?.zoomMin ?: 1f
+    val zoomMax = selectedCamera?.zoomMax ?: 1f
     val concurrentCameraSets = report?.concurrentCameraSets.orEmpty()
     val pipSelectableCameraIds = if (pipEnabled) {
         cameras.filter { camera ->
@@ -251,6 +256,9 @@ private fun AppScreen() {
             controlsHidden = controlsHidden,
             streamRunning = streamRunning,
             streamStatus = streamStatus,
+            zoomRatio = zoomRatio,
+            zoomMin = zoomMin,
+            zoomMax = zoomMax,
             isCameraEnabled = { camera ->
                 !cameraSwitching && camera.id in pipSelectableCameraIds
             },
@@ -290,6 +298,24 @@ private fun AppScreen() {
             },
             onToggleSettings = { showSettings = !showSettings },
             onToggleControls = { controlsHidden = !controlsHidden },
+            onZoomChanged = { nextZoom, preferOptical ->
+                val constrainedZoom = nextZoom.coerceIn(zoomMin, zoomMax)
+                zoomRatio = constrainedZoom
+                runCatching {
+                    streamingPipeline.setZoomRatio(
+                        zoom = constrainedZoom,
+                        preferOptical = preferOptical
+                    )
+                }.onSuccess {
+                    streamStatus = if (preferOptical && constrainedZoom >= 3f) {
+                        "Zoom ${constrainedZoom.formatZoom()}x selected. Tele lens is used automatically when the device exposes it."
+                    } else {
+                        "Zoom ${constrainedZoom.formatZoom()}x selected."
+                    }
+                }.onFailure { error ->
+                    streamStatus = "Unable to zoom: ${error.message ?: "camera API error"}"
+                }
+            },
             onToggleReport = {
                 val next = !showReport
                 showReport = next
@@ -429,6 +455,59 @@ private fun ArrowTab(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ZoomControl(
+    zoomRatio: Float,
+    zoomMin: Float,
+    zoomMax: Float,
+    onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit
+) {
+    val presets = listOf(0.6f, 1f, 2f, 3f, 5f)
+    Column(
+        modifier = Modifier.width(172.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                enabled = zoomRatio > zoomMin,
+                onClick = { onZoomChanged((zoomRatio - 0.5f).coerceAtLeast(zoomMin), false) }
+            ) {
+                Text("-")
+            }
+            Text(
+                text = "${zoomRatio.formatZoom()}x",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFFDCE4EA)
+            )
+            TextButton(
+                enabled = zoomRatio < zoomMax,
+                onClick = { onZoomChanged((zoomRatio + 0.5f).coerceAtMost(zoomMax), false) }
+            ) {
+                Text("+")
+            }
+        }
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            presets.forEach { preset ->
+                FilterChip(
+                    selected = kotlin.math.abs(zoomRatio - preset) < 0.15f,
+                    enabled = preset in zoomMin..zoomMax,
+                    onClick = { onZoomChanged(preset, true) },
+                    label = { Text("${preset.formatZoom()}x") }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun CompactSwitchRow(
     label: String,
@@ -524,17 +603,21 @@ private fun CameraHudOverlay(
     controlsHidden: Boolean,
     streamRunning: Boolean,
     streamStatus: String,
+    zoomRatio: Float,
+    zoomMin: Float,
+    zoomMax: Float,
     isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
     onTogglePip: () -> Unit,
     onToggleSettings: () -> Unit,
     onToggleControls: () -> Unit,
+    onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit,
     onToggleReport: () -> Unit,
     onToggleStream: () -> Unit
 ) {
     val controlsOffset by animateDpAsState(
-        targetValue = if (controlsHidden) 156.dp else 0.dp,
+        targetValue = if (controlsHidden) 196.dp else 0.dp,
         label = "controlsOffset"
     )
 
@@ -605,6 +688,12 @@ private fun CameraHudOverlay(
                             Button(onClick = onToggleStream) {
                                 Text(if (streamRunning) "Stop" else "Start")
                             }
+                            ZoomControl(
+                                zoomRatio = zoomRatio,
+                                zoomMin = zoomMin,
+                                zoomMax = zoomMax,
+                                onZoomChanged = onZoomChanged
+                            )
                             CompactSwitchRow(
                                 label = "PiP",
                                 checked = pipEnabled,
@@ -778,6 +867,13 @@ private fun CameraReportPanel(
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFFCBD3DA)
                         )
+                        if (camera.physicalLenses.isNotEmpty()) {
+                            Text(
+                                text = "physical lenses=${camera.physicalLenses.joinToString { it.displayName() }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFCBD3DA)
+                            )
+                        }
                         Text(
                             text = "video stab=${camera.videoStabilizationModes.joinToString()} optical=${camera.opticalStabilizationModes.joinToString()}",
                             style = MaterialTheme.typography.bodySmall,
@@ -826,6 +922,19 @@ private fun CameraDescriptor.shortName(): String {
         else -> facing.lowercase().replaceFirstChar { it.uppercase() }
     }
     return "$facingName $id"
+}
+
+private fun com.mostafa229.obsmobiledirector.camera.PhysicalLensDescriptor.displayName(): String {
+    val focal = focalLengths.maxOrNull()?.let { "${"%.1f".format(it)}mm" } ?: "unknown"
+    return "$lensRole $id $focal"
+}
+
+private fun Float.formatZoom(): String {
+    return if (this % 1f == 0f) {
+        toInt().toString()
+    } else {
+        "%.1f".format(this)
+    }
 }
 
 private fun selectSecondaryCamera(

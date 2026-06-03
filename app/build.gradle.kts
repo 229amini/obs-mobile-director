@@ -7,12 +7,12 @@ plugins {
 val resolvedVersionCode = (
     providers.gradleProperty("VERSION_CODE").orNull
         ?: providers.environmentVariable("GITHUB_RUN_NUMBER").orNull
-        ?: "6"
-).toIntOrNull()?.coerceAtLeast(6) ?: 6
+        ?: "7"
+).toIntOrNull()?.coerceAtLeast(7) ?: 7
 
 val resolvedVersionName = providers.gradleProperty("VERSION_NAME").orNull
     ?: providers.environmentVariable("VERSION_NAME").orNull
-    ?: "0.1.5"
+    ?: "0.1.6"
 
 android {
     namespace = "com.mostafa229.obsmobiledirector"

@@ -16,12 +16,25 @@ class CameraCapabilityScanner(context: Context) {
                 facing = characteristics.facingLabel(),
                 isLogicalMultiCamera = characteristics.isLogicalMultiCamera(),
                 physicalCameraIds = characteristics.physicalCameraIds.toList().sorted(),
+                physicalLenses = characteristics.physicalCameraIds
+                    .mapNotNull { physicalId -> physicalLensDescriptor(physicalId) }
+                    .sortedBy { lens -> lens.focalLengths.maxOrNull() ?: 0f },
                 focalLengths = characteristics
                     .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                     ?.toList()
                     .orEmpty(),
                 zoomRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.toString()
+                } else {
+                    null
+                },
+                zoomMin = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.lower
+                } else {
+                    null
+                },
+                zoomMax = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.upper
                 } else {
                     null
                 },
@@ -40,6 +53,31 @@ class CameraCapabilityScanner(context: Context) {
             cameras = cameras,
             concurrentCameraSets = concurrentSets
         )
+    }
+
+    private fun physicalLensDescriptor(physicalId: String): PhysicalLensDescriptor? {
+        return runCatching {
+            val physicalCharacteristics = cameraManager.getCameraCharacteristics(physicalId)
+            val focalLengths = physicalCharacteristics
+                .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.toList()
+                .orEmpty()
+
+            PhysicalLensDescriptor(
+                id = physicalId,
+                focalLengths = focalLengths,
+                lensRole = classifyLens(focalLengths.maxOrNull())
+            )
+        }.getOrNull()
+    }
+
+    private fun classifyLens(maxFocalLength: Float?): String {
+        return when {
+            maxFocalLength == null -> "physical"
+            maxFocalLength < 2.4f -> "ultra-wide"
+            maxFocalLength < 5.5f -> "wide"
+            else -> "tele"
+        }
     }
 
     private fun CameraCharacteristics.facingLabel(): String {
