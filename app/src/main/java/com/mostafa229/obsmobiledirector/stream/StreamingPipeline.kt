@@ -33,6 +33,7 @@ class StreamingPipeline(
     private var currentCameraId: String? = null
     private var stabilizationEnabled = false
     private var audioEnabled = true
+    private var audioActive = false
     private var currentZoom = 1f
     private var connectionAttempt = 0
     private var connected = false
@@ -79,10 +80,12 @@ class StreamingPipeline(
      * pipeline transparently falls back to a video-only stream.
      */
     fun setAudioEnabled(enabled: Boolean) {
-        if (audioEnabled == enabled) return
         audioEnabled = enabled
-        // Re-prepare on the next preview/stream so the change is picked up. Safe to
-        // reset while idle; mid-stream it simply applies on the next start.
+        // Always force a re-prepare while idle (do NOT early-return on an unchanged flag):
+        // when RECORD_AUDIO is granted late the desired flag is still `true`, but the
+        // encoder was last prepared with audio disabled, so prepareAudio must re-run.
+        // start() always calls prepareIfNeeded() before streaming, so the next Go Live
+        // picks this up. Mid-stream we leave the running encoder alone.
         if (srtCamera?.isStreaming != true) {
             prepared = false
         }
@@ -227,6 +230,7 @@ class StreamingPipeline(
                 settings.audioStereo
             )
         }.getOrDefault(false)
+        audioActive = audioReady
         if (!audioReady) {
             // Either the user turned the mic off or RECORD_AUDIO is denied / the mic is
             // busy. Drop to a video-only stream rather than failing the whole pipeline.
@@ -276,7 +280,8 @@ class StreamingPipeline(
 
         override fun onConnectionSuccess() {
             connected = true
-            onStatus("SRT live. OBS should now show the phone feed.", true)
+            val mic = if (audioActive) "mic on" else "no mic"
+            onStatus("SRT live ($mic). OBS should now show the phone feed.", true)
         }
 
         override fun onConnectionFailed(reason: String) {
@@ -306,7 +311,8 @@ class StreamingPipeline(
 
         override fun onNewBitrate(bitrate: Long) {
             connected = true
-            onStatus("SRT live: ${bitrate / 1000} Kbps upload.", true)
+            val mic = if (audioActive) "mic on" else "no mic"
+            onStatus("SRT live ($mic): ${bitrate / 1000} Kbps upload.", true)
         }
     }
 }

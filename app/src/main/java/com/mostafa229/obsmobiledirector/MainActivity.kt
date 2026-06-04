@@ -173,6 +173,15 @@ private fun AppScreen() {
         }
     }
 
+    // On an in-place update the camera grant carries over, so the permission screen is
+    // skipped and the mic would never be requested. Ask for it proactively whenever the
+    // camera is allowed but the mic isn't, so audio works without a reinstall.
+    LaunchedEffect(hasCameraPermission, hasAudioPermission) {
+        if (hasCameraPermission && !hasAudioPermission) {
+            permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+        }
+    }
+
     LaunchedEffect(hasAudioPermission, micEnabled) {
         streamingPipeline.setAudioEnabled(hasAudioPermission && micEnabled)
     }
