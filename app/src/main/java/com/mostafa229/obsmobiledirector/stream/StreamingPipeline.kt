@@ -11,8 +11,14 @@ data class StreamSettings(
     val height: Int = 1080,
     val fps: Int = 30,
     val videoBitrate: Int = 6_000_000,
-    val keyframeInterval: Int = 2,
-    val rotation: Int = 0
+    // 1s GOP: OBS waits for a keyframe before it shows the first frame and re-syncs
+    // after packet loss, so a shorter interval cuts startup/recovery latency. The
+    // bitrate cost at 1080p30 is negligible on a flagship encoder.
+    val keyframeInterval: Int = 1,
+    val rotation: Int = 0,
+    val audioBitrate: Int = 128 * 1024,
+    val audioSampleRate: Int = 48_000,
+    val audioStereo: Boolean = true
 )
 
 class StreamingPipeline(
@@ -26,6 +32,7 @@ class StreamingPipeline(
     private var prepared = false
     private var currentCameraId: String? = null
     private var stabilizationEnabled = false
+    private var audioEnabled = true
     private var currentZoom = 1f
     private var connectionAttempt = 0
     private var connected = false
@@ -63,6 +70,22 @@ class StreamingPipeline(
     fun setStabilization(enabled: Boolean) {
         stabilizationEnabled = enabled
         applyStabilization()
+    }
+
+    /**
+     * Enable/disable microphone capture. Takes effect the next time the encoder is
+     * prepared (i.e. on the next Go Live), so toggling it mid-stream is a no-op until
+     * output restarts. When [enabled] is true but the OS denies RECORD_AUDIO, the
+     * pipeline transparently falls back to a video-only stream.
+     */
+    fun setAudioEnabled(enabled: Boolean) {
+        if (audioEnabled == enabled) return
+        audioEnabled = enabled
+        // Re-prepare on the next preview/stream so the change is picked up. Safe to
+        // reset while idle; mid-stream it simply applies on the next start.
+        if (srtCamera?.isStreaming != true) {
+            prepared = false
+        }
     }
 
     fun setZoomRatio(zoom: Float, preferOptical: Boolean = false) {
@@ -197,7 +220,25 @@ class StreamingPipeline(
             settings.rotation
         )
         check(videoPrepared) { "Unable to prepare H.264 video encoder." }
-        camera.disableAudio()
+        val audioReady = audioEnabled && runCatching {
+            camera.prepareAudio(
+                settings.audioBitrate,
+                settings.audioSampleRate,
+                settings.audioStereo
+            )
+        }.getOrDefault(false)
+        if (!audioReady) {
+            // Either the user turned the mic off or RECORD_AUDIO is denied / the mic is
+            // busy. Drop to a video-only stream rather than failing the whole pipeline.
+            camera.disableAudio()
+            if (audioEnabled) {
+                onStatus(
+                    "Microphone unavailable — streaming video only. Grant mic permission, " +
+                        "then start output again to send audio to OBS.",
+                    null
+                )
+            }
+        }
         prepared = true
     }
 

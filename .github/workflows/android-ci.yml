@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so versionCode = commit count is correct
 
       - name: Set up JDK
         uses: actions/setup-java@v4

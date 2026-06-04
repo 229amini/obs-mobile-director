@@ -4,15 +4,30 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// versionCode must only ever increase, or Android treats a new APK as a downgrade and
+// refuses the in-place update (forcing an uninstall/reinstall). GITHUB_RUN_NUMBER is a
+// per-workflow counter, so a release build could end up *lower* than a CI build and break
+// updates. Deriving the code from the git commit count makes it monotonic across every
+// workflow, and the 100000 base keeps it above any run-number-based code already sideloaded.
+fun gitCommitCount(): Int = runCatching {
+    val process = ProcessBuilder("git", "rev-list", "--count", "HEAD")
+        .directory(rootDir)
+        .redirectErrorStream(true)
+        .start()
+    val text = process.inputStream.bufferedReader().use { it.readText() }.trim()
+    process.waitFor()
+    text.toIntOrNull() ?: 0
+}.getOrDefault(0)
+
 val resolvedVersionCode = (
     providers.gradleProperty("VERSION_CODE").orNull
-        ?: providers.environmentVariable("GITHUB_RUN_NUMBER").orNull
-        ?: "7"
-).toIntOrNull()?.coerceAtLeast(7) ?: 7
+        ?: providers.environmentVariable("VERSION_CODE").orNull
+)?.toIntOrNull()
+    ?: (100_000 + gitCommitCount())
 
 val resolvedVersionName = providers.gradleProperty("VERSION_NAME").orNull
     ?: providers.environmentVariable("VERSION_NAME").orNull
-    ?: "0.1.6"
+    ?: "0.2.0"
 
 android {
     namespace = "com.mostafa229.obsmobiledirector"

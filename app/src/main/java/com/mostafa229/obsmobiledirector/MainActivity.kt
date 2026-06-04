@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -45,6 +46,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
@@ -53,6 +55,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -123,6 +126,13 @@ private fun AppScreen() {
                 PackageManager.PERMISSION_GRANTED
         )
     }
+    var hasAudioPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var micEnabled by remember { mutableStateOf(true) }
     var selectedCameraId by remember { mutableStateOf<String?>(null) }
     var report by remember { mutableStateOf<CameraReport?>(null) }
     var showSettings by remember { mutableStateOf(false) }
@@ -133,6 +143,7 @@ private fun AppScreen() {
     var zoomRatio by remember { mutableStateOf(1f) }
     var host by remember { mutableStateOf("192.168.1.9") }
     var port by remember { mutableStateOf("9001") }
+    var latencyMs by remember { mutableStateOf(StreamTarget.DEFAULT_LATENCY_MILLIS.toString()) }
     var streamRunning by remember { mutableStateOf(false) }
     var streamStatus by remember {
         mutableStateOf("Preview active. Configure OBS as an SRT listener, then start output.")
@@ -148,15 +159,22 @@ private fun AppScreen() {
             }
         }
     }
-    val cameraPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-        onResult = { granted -> hasCameraPermission = granted }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+        onResult = { result ->
+            hasCameraPermission = result[Manifest.permission.CAMERA] ?: hasCameraPermission
+            hasAudioPermission = result[Manifest.permission.RECORD_AUDIO] ?: hasAudioPermission
+        }
     )
 
     LaunchedEffect(hasCameraPermission) {
         if (hasCameraPermission) {
             report = CameraCapabilityScanner(context).scan()
         }
+    }
+
+    LaunchedEffect(hasAudioPermission, micEnabled) {
+        streamingPipeline.setAudioEnabled(hasAudioPermission && micEnabled)
     }
 
     LaunchedEffect(report) {
@@ -166,7 +184,7 @@ private fun AppScreen() {
         }
     }
 
-    LaunchedEffect(host, port) {
+    LaunchedEffect(host, port, latencyMs) {
         if (streamRunning) {
             streamingPipeline.stop()
             streamRunning = false
@@ -203,7 +221,9 @@ private fun AppScreen() {
 
     if (!hasCameraPermission) {
         PermissionScreen(onGrantPermission = {
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            permissionLauncher.launch(
+                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+            )
         })
         return
     }
@@ -237,9 +257,13 @@ private fun AppScreen() {
         null
     }
     val parsedPort = port.toIntOrNull()
+    val parsedLatency = latencyMs.toIntOrNull()
+        ?.coerceIn(StreamTarget.MIN_LATENCY_MILLIS, StreamTarget.MAX_LATENCY_MILLIS)
+        ?: StreamTarget.DEFAULT_LATENCY_MILLIS
     val streamTarget = StreamTarget(
         host = host.trim(),
-        port = parsedPort ?: 9001
+        port = parsedPort ?: 9001,
+        latencyMillis = parsedLatency
     )
 
     // Shared zoom entry point used by the pinch gesture, the vertical slider, and the
@@ -285,10 +309,7 @@ private fun AppScreen() {
                 )
         )
 
-        TopStatusOverlay(
-            selectedCamera = selectedCamera,
-            streamRunning = streamRunning
-        )
+        TopStatusOverlay(streamRunning = streamRunning)
 
         secondaryCamera?.let { camera ->
             SecondaryCameraPip(
@@ -307,17 +328,24 @@ private fun AppScreen() {
         }
 
         if (canZoom) {
-            VerticalZoomSlider(
-                zoomRatio = zoomRatio,
-                zoomMin = zoomMin,
-                zoomMax = zoomMax,
-                onZoomChanged = { applyZoom(it, false) },
+            // Reserve the top status zone and the bottom bar zone so the slider always
+            // sits in the clear middle band and never slides under the control bar.
+            Box(
                 modifier = Modifier
                     .align(Alignment.CenterStart)
+                    .fillMaxHeight()
                     .statusBarsPadding()
                     .navigationBarsPadding()
-                    .padding(start = 10.dp)
-            )
+                    .padding(start = 10.dp, top = 56.dp, bottom = 96.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                VerticalZoomSlider(
+                    zoomRatio = zoomRatio,
+                    zoomMin = zoomMin,
+                    zoomMax = zoomMax,
+                    onZoomChanged = { applyZoom(it, false) }
+                )
+            }
         }
 
         CameraHudOverlay(
@@ -325,11 +353,10 @@ private fun AppScreen() {
             selectedCameraId = selectedCameraId,
             stabilizationEnabled = stabilizationEnabled,
             pipEnabled = pipEnabled,
+            micEnabled = micEnabled,
+            audioAvailable = hasAudioPermission,
             streamRunning = streamRunning,
             streamStatus = streamStatus,
-            zoomRatio = zoomRatio,
-            zoomMin = zoomMin,
-            zoomMax = zoomMax,
             isCameraEnabled = { camera ->
                 !cameraSwitching && camera.id in pipSelectableCameraIds
             },
@@ -368,7 +395,19 @@ private fun AppScreen() {
                 }
             },
             onToggleSettings = { showSettings = !showSettings },
-            onZoomChanged = applyZoom,
+            onToggleMic = {
+                if (!hasAudioPermission) {
+                    permissionLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                    streamStatus = "Grant microphone permission to send audio to OBS."
+                } else {
+                    micEnabled = !micEnabled
+                    streamStatus = if (micEnabled) {
+                        "Microphone on. Audio is sent to OBS on the next Go Live."
+                    } else {
+                        "Microphone muted. Streaming video only."
+                    }
+                }
+            },
             onToggleReport = {
                 val next = !showReport
                 showReport = next
@@ -405,9 +444,11 @@ private fun AppScreen() {
             SettingsPanel(
                 host = host,
                 port = port,
+                latencyMs = latencyMs,
                 streamTarget = streamTarget,
                 onHostChanged = { host = it },
                 onPortChanged = { port = it },
+                onLatencyChanged = { latencyMs = it },
                 onClose = { showSettings = false },
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
@@ -487,39 +528,6 @@ private fun SecondaryCameraPip(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ZoomControl(
-    zoomRatio: Float,
-    zoomMin: Float,
-    zoomMax: Float,
-    onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit
-) {
-    val presets = listOf(0.6f, 1f, 2f, 3f, 5f).filter { it in zoomMin..zoomMax }
-    Column(
-        modifier = Modifier.width(172.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        Text(
-            text = "Zoom ${zoomRatio.formatZoom()}x · pinch or slider",
-            style = MaterialTheme.typography.labelSmall,
-            color = Color(0xFFAEB8C0)
-        )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            presets.forEach { preset ->
-                FilterChip(
-                    selected = kotlin.math.abs(zoomRatio - preset) < 0.15f,
-                    onClick = { onZoomChanged(preset, true) },
-                    label = { Text("${preset.formatZoom()}x") }
-                )
-            }
-        }
-    }
-}
-
 /**
  * Camera-style vertical zoom slider. Top of the track is max zoom, bottom is min.
  * Tap to jump, drag the thumb to scrub. Reports the absolute zoom ratio.
@@ -535,7 +543,11 @@ private fun VerticalZoomSlider(
     val range = (zoomMax - zoomMin).coerceAtLeast(0.0001f)
     val fraction = ((zoomRatio - zoomMin) / range).coerceIn(0f, 1f)
     Column(
-        modifier = modifier,
+        // Fill the reserved vertical band (capped) so the track scales to the screen
+        // and never overlaps the bottom control bar.
+        modifier = modifier
+            .heightIn(max = 280.dp)
+            .fillMaxHeight(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -551,7 +563,7 @@ private fun VerticalZoomSlider(
         Canvas(
             modifier = Modifier
                 .width(40.dp)
-                .height(220.dp)
+                .weight(1f)
                 .pointerInput(zoomMin, zoomMax) {
                     detectTapGestures { offset ->
                         val f = (1f - offset.y / size.height).coerceIn(0f, 1f)
@@ -640,137 +652,135 @@ private fun PermissionScreen(onGrantPermission: () -> Unit) {
 }
 
 @Composable
-private fun TopStatusOverlay(
-    selectedCamera: CameraDescriptor?,
-    streamRunning: Boolean
-) {
+private fun TopStatusOverlay(streamRunning: Boolean) {
+    // Minimal: just a small streaming-state pill in the top-right corner. The old
+    // "OBS Mobile Director" title block was removed to keep the preview unobstructed.
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
             .padding(14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            color = Color(0x99000000),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(
-                    text = "OBS Mobile Director",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Text(
-                    text = selectedCamera?.let { "Preview: ${it.displayName()}" } ?: "Scanning cameras",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFC8D0D8)
-                )
-            }
-        }
         StatusPill(text = if (streamRunning) "SRT" else "LOCAL")
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CameraHudOverlay(
     cameras: List<CameraDescriptor>,
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
     pipEnabled: Boolean,
+    micEnabled: Boolean,
+    audioAvailable: Boolean,
     streamRunning: Boolean,
     streamStatus: String,
-    zoomRatio: Float,
-    zoomMin: Float,
-    zoomMax: Float,
     isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
     onTogglePip: () -> Unit,
+    onToggleMic: () -> Unit,
     onToggleSettings: () -> Unit,
-    onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit,
     onToggleReport: () -> Unit,
     onToggleStream: () -> Unit
 ) {
     var optionsOpen by remember { mutableStateOf(false) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.Bottom,
-        horizontalAlignment = Alignment.End
-    ) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Tap-anywhere-outside scrim so the panel is always easy to dismiss.
         AnimatedVisibility(
             visible = optionsOpen,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
+            enter = fadeIn(),
+            exit = fadeOut()
         ) {
-            OptionsCard(
-                cameras = cameras,
-                selectedCameraId = selectedCameraId,
-                stabilizationEnabled = stabilizationEnabled,
-                pipEnabled = pipEnabled,
-                zoomRatio = zoomRatio,
-                zoomMin = zoomMin,
-                zoomMax = zoomMax,
-                isCameraEnabled = isCameraEnabled,
-                onCameraSelected = onCameraSelected,
-                onToggleStabilization = onToggleStabilization,
-                onTogglePip = onTogglePip,
-                onZoomChanged = onZoomChanged,
-                onOpenSettings = onToggleSettings,
-                onOpenReport = onToggleReport
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x66000000))
+                    .pointerInput(Unit) {
+                        detectTapGestures { optionsOpen = false }
+                    }
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // Minimal bottom bar: status + camera flip + options (gear) + the one primary
-        // Go Live / Stop action. Everything else lives behind the gear.
-        Surface(
-            color = Color(0xB8000000),
-            shape = RoundedCornerShape(24.dp),
-            shadowElevation = 8.dp
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.Bottom,
+            horizontalAlignment = Alignment.End
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            AnimatedVisibility(
+                visible = optionsOpen,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
             ) {
-                Text(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 6.dp),
-                    text = streamStatus,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFFC8D0D8),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                OptionsCard(
+                    cameras = cameras,
+                    selectedCameraId = selectedCameraId,
+                    stabilizationEnabled = stabilizationEnabled,
+                    pipEnabled = pipEnabled,
+                    micEnabled = micEnabled,
+                    audioAvailable = audioAvailable,
+                    isCameraEnabled = isCameraEnabled,
+                    onCameraSelected = onCameraSelected,
+                    onToggleStabilization = onToggleStabilization,
+                    onTogglePip = onTogglePip,
+                    onToggleMic = onToggleMic,
+                    onOpenSettings = onToggleSettings,
+                    onOpenReport = onToggleReport,
+                    onClose = { optionsOpen = false }
                 )
-                FilledTonalIconButton(
-                    onClick = {
-                        flipCamera(cameras, selectedCameraId, isCameraEnabled, onCameraSelected)
-                    },
-                    enabled = cameras.size > 1
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Minimal bottom bar: status + camera flip + options (gear) + the one primary
+            // Go Live / Stop action. Everything else lives behind the gear.
+            Surface(
+                color = Color(0xB8000000),
+                shape = RoundedCornerShape(24.dp),
+                shadowElevation = 8.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Cameraswitch,
-                        contentDescription = "Switch camera"
+                    Text(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 6.dp),
+                        text = streamStatus,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFFC8D0D8),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
+                    FilledTonalIconButton(
+                        onClick = {
+                            flipCamera(cameras, selectedCameraId, isCameraEnabled, onCameraSelected)
+                        },
+                        enabled = cameras.size > 1
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Cameraswitch,
+                            contentDescription = "Switch camera"
+                        )
+                    }
+                    FilledTonalIconButton(onClick = { optionsOpen = !optionsOpen }) {
+                        Icon(
+                            imageVector = Icons.Filled.Tune,
+                            contentDescription = "More options"
+                        )
+                    }
+                    StreamButton(streamRunning = streamRunning, onClick = onToggleStream)
                 }
-                FilledTonalIconButton(onClick = { optionsOpen = !optionsOpen }) {
-                    Icon(
-                        imageVector = Icons.Filled.Tune,
-                        contentDescription = "More options"
-                    )
-                }
-                StreamButton(streamRunning = streamRunning, onClick = onToggleStream)
             }
         }
     }
@@ -783,16 +793,16 @@ private fun OptionsCard(
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
     pipEnabled: Boolean,
-    zoomRatio: Float,
-    zoomMin: Float,
-    zoomMax: Float,
+    micEnabled: Boolean,
+    audioAvailable: Boolean,
     isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
     onTogglePip: () -> Unit,
-    onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit,
+    onToggleMic: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenReport: () -> Unit
+    onOpenReport: () -> Unit,
+    onClose: () -> Unit
 ) {
     Surface(
         color = Color(0xF20E1014),
@@ -801,10 +811,28 @@ private fun OptionsCard(
     ) {
         Column(
             modifier = Modifier
-                .widthIn(min = 260.dp, max = 360.dp)
+                .widthIn(min = 280.dp, max = 380.dp)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Options",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                IconButton(onClick = onClose) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Hide options"
+                    )
+                }
+            }
+
             SectionLabel("Camera")
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -820,17 +848,13 @@ private fun OptionsCard(
                 }
             }
 
-            if ((zoomMax > zoomMin)) {
-                SectionLabel("Zoom")
-                ZoomControl(
-                    zoomRatio = zoomRatio,
-                    zoomMin = zoomMin,
-                    zoomMax = zoomMax,
-                    onZoomChanged = onZoomChanged
-                )
-            }
-
-            SectionLabel("Overlay")
+            SectionLabel("Toggles")
+            CompactSwitchRow(
+                label = if (audioAvailable) "Microphone" else "Microphone (tap to allow)",
+                checked = micEnabled && audioAvailable,
+                enabled = true,
+                onToggle = onToggleMic
+            )
             CompactSwitchRow(
                 label = "Picture in picture",
                 checked = pipEnabled,
@@ -911,9 +935,11 @@ private fun flipCamera(
 private fun SettingsPanel(
     host: String,
     port: String,
+    latencyMs: String,
     streamTarget: StreamTarget,
     onHostChanged: (String) -> Unit,
     onPortChanged: (String) -> Unit,
+    onLatencyChanged: (String) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -964,6 +990,20 @@ private fun SettingsPanel(
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
             )
+            OutlinedTextField(
+                modifier = Modifier.fillMaxWidth(),
+                value = latencyMs,
+                onValueChange = onLatencyChanged,
+                label = { Text("Latency (ms)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            Text(
+                text = "Lower = less delay, higher = smoother on weak Wi-Fi. On a Wi-Fi 6 " +
+                    "LAN try 80–120 ms. The OBS Media Source latency must match this value.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFAEB8C0)
+            )
             Text(
                 text = "OBS listener URL",
                 style = MaterialTheme.typography.titleSmall,
@@ -975,7 +1015,9 @@ private fun SettingsPanel(
                 color = Color(0xFF66D9EF)
             )
             Text(
-                text = "Use this URL in OBS Media Source or VLC on the PC, then start SRT from the HUD.",
+                text = "In OBS add a Media Source, paste this URL, and for the lowest delay " +
+                    "set Network Buffering to 0 MB and uncheck \"Restart playback when source " +
+                    "becomes active\". Then start SRT from the HUD.",
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFFCBD3DA)
             )
