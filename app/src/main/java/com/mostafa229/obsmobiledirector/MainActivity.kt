@@ -182,8 +182,14 @@ private fun AppScreen() {
         }
     }
 
-    LaunchedEffect(hasAudioPermission, micEnabled) {
-        streamingPipeline.setAudioEnabled(hasAudioPermission && micEnabled)
+    // Permission controls whether an audio track exists; the mic toggle mutes/unmutes it
+    // live. Kept separate so toggling during a stream mutes instantly instead of waiting
+    // for the next Go Live.
+    LaunchedEffect(hasAudioPermission) {
+        streamingPipeline.setAudioPermitted(hasAudioPermission)
+    }
+    LaunchedEffect(micEnabled) {
+        streamingPipeline.setMicOn(micEnabled)
     }
 
     LaunchedEffect(report) {
@@ -410,10 +416,9 @@ private fun AppScreen() {
                     streamStatus = "Grant microphone permission to send audio to OBS."
                 } else {
                     micEnabled = !micEnabled
-                    streamStatus = if (micEnabled) {
-                        "Microphone on. Audio is sent to OBS on the next Go Live."
-                    } else {
-                        "Microphone muted. Streaming video only."
+                    // While streaming, the pipeline posts the live mute/unmute status.
+                    if (!streamRunning) {
+                        streamStatus = if (micEnabled) "Microphone on." else "Microphone off."
                     }
                 }
             },

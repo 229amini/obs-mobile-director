@@ -32,8 +32,12 @@ class StreamingPipeline(
     private var prepared = false
     private var currentCameraId: String? = null
     private var stabilizationEnabled = false
-    private var audioEnabled = true
-    private var audioActive = false
+    // audioPermitted: RECORD_AUDIO granted -> an audio track is muxed into the stream.
+    // micOn: the live mute state toggled by the user (unmuted vs silence).
+    // audioTrackPrepared: an audio track actually exists in the running stream.
+    private var audioPermitted = false
+    private var micOn = true
+    private var audioTrackPrepared = false
     private var currentZoom = 1f
     private var connectionAttempt = 0
     private var connected = false
@@ -76,20 +80,32 @@ class StreamingPipeline(
     }
 
     /**
-     * Enable/disable microphone capture. Takes effect the next time the encoder is
-     * prepared (i.e. on the next Go Live), so toggling it mid-stream is a no-op until
-     * output restarts. When [enabled] is true but the OS denies RECORD_AUDIO, the
-     * pipeline transparently falls back to a video-only stream.
+     * Whether RECORD_AUDIO is granted. Controls whether an audio track is muxed into the
+     * stream at all. Changing it while idle forces a re-prepare so the track is added (or
+     * removed) on the next Go Live; mid-stream it can't add/remove a track.
      */
-    fun setAudioEnabled(enabled: Boolean) {
-        audioEnabled = enabled
-        // Always force a re-prepare while idle (do NOT early-return on an unchanged flag):
-        // when RECORD_AUDIO is granted late the desired flag is still `true`, but the
-        // encoder was last prepared with audio disabled, so prepareAudio must re-run.
-        // start() always calls prepareIfNeeded() before streaming, so the next Go Live
-        // picks this up. Mid-stream we leave the running encoder alone.
+    fun setAudioPermitted(permitted: Boolean) {
+        if (audioPermitted == permitted) return
+        audioPermitted = permitted
         if (srtCamera?.isStreaming != true) {
             prepared = false
+        }
+    }
+
+    /**
+     * Live mute/unmute. While streaming this mutes (silence) or unmutes the mic instantly
+     * without touching the encoder, so OBS keeps A/V sync. It only has an audible effect
+     * if the stream was started with the mic permitted (an audio track exists).
+     */
+    fun setMicOn(on: Boolean) {
+        micOn = on
+        val camera = srtCamera ?: return
+        if (!camera.isStreaming) return // applied when the next stream is prepared
+        if (audioTrackPrepared) {
+            runCatching { if (on) camera.enableAudio() else camera.disableAudio() }
+            onStatus(if (on) "Microphone unmuted." else "Microphone muted.", null)
+        } else if (on) {
+            onStatus("This stream has no mic track — stop and Go Live again to add audio.", null)
         }
     }
 
@@ -225,22 +241,26 @@ class StreamingPipeline(
             settings.rotation
         )
         check(videoPrepared) { "Unable to prepare H.264 video encoder." }
-        val audioReady = audioEnabled && runCatching {
+        // Prepare the audio track whenever the mic is permitted (independent of the live
+        // mute toggle) so the track always exists and can be unmuted mid-stream.
+        val audioReady = audioPermitted && runCatching {
             camera.prepareAudio(
                 settings.audioBitrate,
                 settings.audioSampleRate,
                 settings.audioStereo
             )
         }.getOrDefault(false)
-        audioActive = audioReady
-        if (!audioReady) {
-            // Either the user turned the mic off or RECORD_AUDIO is denied / the mic is
-            // busy. Drop to a video-only stream rather than failing the whole pipeline.
+        audioTrackPrepared = audioReady
+        if (audioReady) {
+            // Honour the current mute state from the very first frame.
+            if (micOn) camera.enableAudio() else camera.disableAudio()
+        } else {
+            // No permission / mic busy -> video-only. disableAudio() is a harmless mute.
             camera.disableAudio()
-            if (audioEnabled) {
+            if (audioPermitted) {
                 onStatus(
-                    "Microphone unavailable — streaming video only. Grant mic permission, " +
-                        "then start output again to send audio to OBS.",
+                    "Microphone unavailable — streaming video only. Re-grant mic " +
+                        "permission, then start output again to send audio to OBS.",
                     null
                 )
             }
@@ -274,6 +294,12 @@ class StreamingPipeline(
         }
     }
 
+    private fun micLabel(): String = when {
+        !audioTrackPrepared -> "no mic"
+        micOn -> "mic on"
+        else -> "muted"
+    }
+
     private val connectChecker = object : ConnectChecker {
         override fun onConnectionStarted(url: String) {
             connected = false
@@ -282,8 +308,7 @@ class StreamingPipeline(
 
         override fun onConnectionSuccess() {
             connected = true
-            val mic = if (audioActive) "mic on" else "no mic"
-            onStatus("SRT live ($mic). OBS should now show the phone feed.", true)
+            onStatus("SRT live (${micLabel()}). OBS should now show the phone feed.", true)
         }
 
         override fun onConnectionFailed(reason: String) {
@@ -313,8 +338,7 @@ class StreamingPipeline(
 
         override fun onNewBitrate(bitrate: Long) {
             connected = true
-            val mic = if (audioActive) "mic on" else "no mic"
-            onStatus("SRT live ($mic): ${bitrate / 1000} Kbps upload.", true)
+            onStatus("SRT live (${micLabel()}): ${bitrate / 1000} Kbps upload.", true)
         }
     }
 }
