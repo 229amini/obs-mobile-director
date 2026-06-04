@@ -14,6 +14,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
@@ -21,6 +22,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 @OptIn(ExperimentalCamera2Interop::class)
 @Composable
@@ -34,69 +38,61 @@ fun CameraPreview(
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentOnError = rememberUpdatedState(onError)
     val executor = remember(context) { ContextCompat.getMainExecutor(context) }
-    val cameraSelector = remember(cameraId) {
-        if (cameraId == null) {
-            CameraSelector.DEFAULT_BACK_CAMERA
-        } else {
-            CameraSelector.Builder()
-                .addCameraFilter { cameraInfos ->
-                    cameraInfos.filter { cameraInfo ->
-                        Camera2CameraInfo.from(cameraInfo).cameraId == cameraId
-                    }
-                }
-                .build()
+    // The PreviewView is created once and reused. Re-creating it (or re-binding the
+    // camera on every recomposition, as the previous version did inside
+    // AndroidView.update) is what made PiP switching flicker and freeze, because the
+    // HUD recomposes constantly while streaming.
+    val previewView = remember(context) {
+        PreviewView(context).apply {
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+            // COMPATIBLE uses a TextureView, which (unlike a SurfaceView in
+            // PERFORMANCE mode) is clipped by the parent's rounded-corner shape, and
+            // it keeps the last frame visible during a rebind so the switch looks
+            // smoother instead of flashing black.
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         }
     }
     val cameraProviderFuture = remember(context) {
         ProcessCameraProvider.getInstance(context)
     }
-    val stabilizationMode = remember(context, cameraId, stabilizationEnabled) {
-        if (stabilizationEnabled && cameraId != null) {
-            preferredVideoStabilizationMode(context, cameraId)
-        } else {
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+
+    AndroidView(modifier = modifier, factory = { previewView })
+
+    // Bind only when the selected camera or stabilization actually changes — not on
+    // every recomposition. This removes the rebind churn that caused the freezes.
+    LaunchedEffect(cameraId, stabilizationEnabled) {
+        runCatching {
+            val cameraProvider = cameraProviderFuture.awaitProvider(executor)
+            val cameraSelector = if (cameraId == null) {
+                CameraSelector.DEFAULT_BACK_CAMERA
+            } else {
+                CameraSelector.Builder()
+                    .addCameraFilter { cameraInfos ->
+                        cameraInfos.filter { cameraInfo ->
+                            Camera2CameraInfo.from(cameraInfo).cameraId == cameraId
+                        }
+                    }
+                    .build()
+            }
+            val stabilizationMode = if (stabilizationEnabled && cameraId != null) {
+                preferredVideoStabilizationMode(context, cameraId)
+            } else {
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+            }
+            val previewBuilder = Preview.Builder()
+            Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                stabilizationMode
+            )
+            val preview = previewBuilder.build()
+                .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+
+            cameraProvider.unbindAll()
+            cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, preview)
+        }.onFailure { error ->
+            currentOnError.value(error)
         }
     }
-
-    AndroidView(
-        modifier = modifier,
-        factory = { viewContext ->
-            PreviewView(viewContext).apply {
-                scaleType = PreviewView.ScaleType.FILL_CENTER
-                // COMPATIBLE uses a TextureView, which (unlike a SurfaceView in
-                // PERFORMANCE mode) is clipped by the parent's rounded-corner shape.
-                // Required for the PiP to render inside the rounded frame instead of
-                // punching a hard rectangle through it.
-                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-            }
-        },
-        update = { previewView ->
-            cameraProviderFuture.addListener(
-                {
-                    runCatching {
-                        val cameraProvider = cameraProviderFuture.get()
-                        val previewBuilder = Preview.Builder()
-                        Camera2Interop.Extender(previewBuilder).setCaptureRequestOption(
-                            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-                            stabilizationMode
-                        )
-                        val preview = previewBuilder.build()
-                            .also { it.setSurfaceProvider(previewView.surfaceProvider) }
-
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            cameraSelector,
-                            preview
-                        )
-                    }.onFailure { error ->
-                        currentOnError.value(error)
-                    }
-                },
-                executor
-            )
-        }
-    )
 
     DisposableEffect(Unit) {
         onDispose {
@@ -105,6 +101,19 @@ fun CameraPreview(
             }
         }
     }
+}
+
+private suspend fun com.google.common.util.concurrent.ListenableFuture<ProcessCameraProvider>.awaitProvider(
+    executor: java.util.concurrent.Executor
+): ProcessCameraProvider = suspendCancellableCoroutine { continuation ->
+    addListener(
+        {
+            runCatching { get() }
+                .onSuccess { continuation.resume(it) }
+                .onFailure { continuation.resumeWithException(it) }
+        },
+        executor
+    )
 }
 
 private fun preferredVideoStabilizationMode(

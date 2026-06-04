@@ -10,7 +10,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -30,8 +34,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -39,8 +43,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -67,6 +79,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -116,7 +129,6 @@ private fun AppScreen() {
     var showReport by remember { mutableStateOf(false) }
     var stabilizationEnabled by remember { mutableStateOf(true) }
     var pipEnabled by remember { mutableStateOf(false) }
-    var controlsHidden by remember { mutableStateOf(false) }
     var cameraSwitching by remember { mutableStateOf(false) }
     var zoomRatio by remember { mutableStateOf(1f) }
     var host by remember { mutableStateOf("192.168.1.9") }
@@ -294,7 +306,7 @@ private fun AppScreen() {
             )
         }
 
-        if (canZoom && !controlsHidden) {
+        if (canZoom) {
             VerticalZoomSlider(
                 zoomRatio = zoomRatio,
                 zoomMin = zoomMin,
@@ -313,7 +325,6 @@ private fun AppScreen() {
             selectedCameraId = selectedCameraId,
             stabilizationEnabled = stabilizationEnabled,
             pipEnabled = pipEnabled,
-            controlsHidden = controlsHidden,
             streamRunning = streamRunning,
             streamStatus = streamStatus,
             zoomRatio = zoomRatio,
@@ -357,7 +368,6 @@ private fun AppScreen() {
                 }
             },
             onToggleSettings = { showSettings = !showSettings },
-            onToggleControls = { controlsHidden = !controlsHidden },
             onZoomChanged = applyZoom,
             onToggleReport = {
                 val next = !showReport
@@ -477,30 +487,6 @@ private fun SecondaryCameraPip(
     }
 }
 
-@Composable
-private fun ArrowTab(
-    label: String,
-    onClick: () -> Unit
-) {
-    Surface(
-        color = Color(0xB0000000),
-        shape = RoundedCornerShape(999.dp)
-    ) {
-        TextButton(
-            modifier = Modifier
-                .width(36.dp)
-                .height(52.dp),
-            onClick = onClick
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ZoomControl(
@@ -610,13 +596,13 @@ private fun CompactSwitchRow(
     onToggle: () -> Unit
 ) {
     Row(
-        modifier = Modifier.width(132.dp),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.bodyMedium,
             color = Color(0xFFDCE4EA)
         )
         Switch(
@@ -694,7 +680,6 @@ private fun CameraHudOverlay(
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
     pipEnabled: Boolean,
-    controlsHidden: Boolean,
     streamRunning: Boolean,
     streamStatus: String,
     zoomRatio: Float,
@@ -705,115 +690,221 @@ private fun CameraHudOverlay(
     onToggleStabilization: () -> Unit,
     onTogglePip: () -> Unit,
     onToggleSettings: () -> Unit,
-    onToggleControls: () -> Unit,
     onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit,
     onToggleReport: () -> Unit,
     onToggleStream: () -> Unit
 ) {
-    val controlsOffset by animateDpAsState(
-        targetValue = if (controlsHidden) 196.dp else 0.dp,
-        label = "controlsOffset"
-    )
+    var optionsOpen by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .navigationBarsPadding()
-            .padding(14.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.Bottom,
+        horizontalAlignment = Alignment.End
     ) {
-        Spacer(modifier = Modifier.height(1.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Bottom
+        AnimatedVisibility(
+            visible = optionsOpen,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
         ) {
-            Surface(
-                color = Color(0xB0000000),
-                shape = RoundedCornerShape(12.dp)
+            OptionsCard(
+                cameras = cameras,
+                selectedCameraId = selectedCameraId,
+                stabilizationEnabled = stabilizationEnabled,
+                pipEnabled = pipEnabled,
+                zoomRatio = zoomRatio,
+                zoomMin = zoomMin,
+                zoomMax = zoomMax,
+                isCameraEnabled = isCameraEnabled,
+                onCameraSelected = onCameraSelected,
+                onToggleStabilization = onToggleStabilization,
+                onTogglePip = onTogglePip,
+                onZoomChanged = onZoomChanged,
+                onOpenSettings = onToggleSettings,
+                onOpenReport = onToggleReport
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Minimal bottom bar: status + camera flip + options (gear) + the one primary
+        // Go Live / Stop action. Everything else lives behind the gear.
+        Surface(
+            color = Color(0xB8000000),
+            shape = RoundedCornerShape(24.dp),
+            shadowElevation = 8.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Column(
+                Text(
                     modifier = Modifier
-                        .widthIn(min = 260.dp, max = 460.dp)
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                        .weight(1f)
+                        .padding(start = 6.dp),
+                    text = streamStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFC8D0D8),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                FilledTonalIconButton(
+                    onClick = {
+                        flipCamera(cameras, selectedCameraId, isCameraEnabled, onCameraSelected)
+                    },
+                    enabled = cameras.size > 1
                 ) {
-                    Text(
-                        text = streamStatus,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color(0xFFDCE4EA)
+                    Icon(
+                        imageVector = Icons.Filled.Cameraswitch,
+                        contentDescription = "Switch camera"
                     )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        cameras.forEach { camera ->
-                            val enabled = isCameraEnabled(camera)
-                            FilterChip(
-                                selected = camera.id == selectedCameraId,
-                                onClick = { onCameraSelected(camera) },
-                                enabled = enabled,
-                                label = { Text(camera.shortName()) }
-                            )
-                        }
-                    }
+                }
+                FilledTonalIconButton(onClick = { optionsOpen = !optionsOpen }) {
+                    Icon(
+                        imageVector = Icons.Filled.Tune,
+                        contentDescription = "More options"
+                    )
+                }
+                StreamButton(streamRunning = streamRunning, onClick = onToggleStream)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OptionsCard(
+    cameras: List<CameraDescriptor>,
+    selectedCameraId: String?,
+    stabilizationEnabled: Boolean,
+    pipEnabled: Boolean,
+    zoomRatio: Float,
+    zoomMin: Float,
+    zoomMax: Float,
+    isCameraEnabled: (CameraDescriptor) -> Boolean,
+    onCameraSelected: (CameraDescriptor) -> Unit,
+    onToggleStabilization: () -> Unit,
+    onTogglePip: () -> Unit,
+    onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenReport: () -> Unit
+) {
+    Surface(
+        color = Color(0xF20E1014),
+        shape = RoundedCornerShape(20.dp),
+        shadowElevation = 12.dp
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(min = 260.dp, max = 360.dp)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            SectionLabel("Camera")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                cameras.forEach { camera ->
+                    FilterChip(
+                        selected = camera.id == selectedCameraId,
+                        onClick = { onCameraSelected(camera) },
+                        enabled = isCameraEnabled(camera),
+                        label = { Text(camera.shortName()) }
+                    )
                 }
             }
 
-            Box(contentAlignment = Alignment.BottomEnd) {
-                Row(
-                    modifier = Modifier.offset(x = controlsOffset),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            if ((zoomMax > zoomMin)) {
+                SectionLabel("Zoom")
+                ZoomControl(
+                    zoomRatio = zoomRatio,
+                    zoomMin = zoomMin,
+                    zoomMax = zoomMax,
+                    onZoomChanged = onZoomChanged
+                )
+            }
+
+            SectionLabel("Overlay")
+            CompactSwitchRow(
+                label = "Picture in picture",
+                checked = pipEnabled,
+                enabled = cameras.size > 1,
+                onToggle = onTogglePip
+            )
+            CompactSwitchRow(
+                label = "Stabilization",
+                checked = stabilizationEnabled,
+                enabled = true,
+                onToggle = onToggleStabilization
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenSettings
                 ) {
-                    ArrowTab(
-                        label = if (controlsHidden) "<" else ">",
-                        onClick = onToggleControls
-                    )
-                    Surface(
-                        color = Color(0xB0000000),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
-                            horizontalAlignment = Alignment.End
-                        ) {
-                            Button(onClick = onToggleStream) {
-                                Text(if (streamRunning) "Stop" else "Start")
-                            }
-                            ZoomControl(
-                                zoomRatio = zoomRatio,
-                                zoomMin = zoomMin,
-                                zoomMax = zoomMax,
-                                onZoomChanged = onZoomChanged
-                            )
-                            CompactSwitchRow(
-                                label = "PiP",
-                                checked = pipEnabled,
-                                enabled = cameras.size > 1,
-                                onToggle = onTogglePip
-                            )
-                            CompactSwitchRow(
-                                label = "Stab",
-                                checked = stabilizationEnabled,
-                                enabled = true,
-                                onToggle = onToggleStabilization
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(onClick = onToggleSettings) {
-                                    Text("Settings")
-                                }
-                                TextButton(onClick = onToggleReport) {
-                                    Text("Cameras")
-                                }
-                            }
-                        }
-                    }
+                    Text("SRT setup")
+                }
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenReport
+                ) {
+                    Text("Cameras")
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = Color(0xFF8C97A1)
+    )
+}
+
+@Composable
+private fun StreamButton(streamRunning: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (streamRunning) Color(0xFFE5484D) else Color(0xFF66D9EF),
+            contentColor = if (streamRunning) Color.White else Color(0xFF052730)
+        )
+    ) {
+        Icon(
+            imageVector = if (streamRunning) Icons.Filled.Stop else Icons.Filled.FiberManualRecord,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = if (streamRunning) "Stop" else "Go Live",
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+private fun flipCamera(
+    cameras: List<CameraDescriptor>,
+    selectedCameraId: String?,
+    isCameraEnabled: (CameraDescriptor) -> Boolean,
+    onCameraSelected: (CameraDescriptor) -> Unit
+) {
+    val current = cameras.firstOrNull { it.id == selectedCameraId }
+    val candidates = cameras.filter { isCameraEnabled(it) && it.id != selectedCameraId }
+    val target = candidates.firstOrNull { it.facing != current?.facing } ?: candidates.firstOrNull()
+    target?.let(onCameraSelected)
 }
 
 @Composable
