@@ -1,10 +1,12 @@
 package com.mostafa229.obsmobiledirector.stream
 
+import android.hardware.camera2.CaptureRequest
 import android.os.Handler
 import android.os.Looper
 import com.pedro.common.ConnectChecker
 import com.pedro.library.srt.SrtCamera2
 import com.pedro.library.view.OpenGlView
+import java.lang.reflect.Field
 
 data class StreamSettings(
     val width: Int = 1920,
@@ -38,6 +40,7 @@ class StreamingPipeline(
     private var audioPermitted = false
     private var micOn = true
     private var audioTrackPrepared = false
+    private var antibandingValue = CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO
     private var currentZoom = 1f
     private var connectionAttempt = 0
     private var connected = false
@@ -58,6 +61,7 @@ class StreamingPipeline(
         prepareIfNeeded()
         currentCameraId?.let { startPreview(it) }
         applyStabilization()
+        applyAntibanding()
     }
 
     fun selectCamera(cameraId: String?) {
@@ -72,11 +76,18 @@ class StreamingPipeline(
         }
         setZoomRatio(currentZoom)
         applyStabilization()
+        applyAntibanding()
     }
 
     fun setStabilization(enabled: Boolean) {
         stabilizationEnabled = enabled
         applyStabilization()
+    }
+
+    /** Set the camera anti-flicker (AE anti-banding) mode and apply it to the live session. */
+    fun setAntibanding(mode: AntibandingMode) {
+        antibandingValue = mode.camera2Value
+        applyAntibanding()
     }
 
     /**
@@ -140,6 +151,7 @@ class StreamingPipeline(
             currentCameraId?.let { startPreview(it) }
             setZoomRatio(currentZoom)
             applyStabilization()
+            applyAntibanding()
             if (!camera.isStreaming) {
                 camera.startStream(target.uri)
             }
@@ -202,6 +214,7 @@ class StreamingPipeline(
             currentCameraId?.let { startPreview(it) }
             setZoomRatio(currentZoom)
             applyStabilization()
+            applyAntibanding()
         }.onFailure { error ->
             onStatus("Preview recovery failed: ${error.message ?: "camera API error"}", false)
         }
@@ -292,6 +305,38 @@ class StreamingPipeline(
             camera.disableVideoStabilization()
             camera.disableOpticalVideoStabilization()
         }
+    }
+
+    // RootEncoder 2.7.1 has no public anti-banding API, but Camera2ApiManager exposes
+    // setCustomRequest { builder -> ... }. The manager field is private on Camera2Base, so
+    // reach it reflectively (safe: the release build keeps R8/minify off, so names are
+    // preserved). Failures are swallowed — anti-flicker is best-effort.
+    private fun applyAntibanding() {
+        val camera = srtCamera ?: return
+        runCatching {
+            val managerField = findField(camera.javaClass, "cameraManager") ?: return
+            managerField.isAccessible = true
+            val manager = managerField.get(camera) ?: return
+            val setCustomRequest = manager.javaClass.methods.firstOrNull {
+                it.name == "setCustomRequest" && it.parameterTypes.size == 1
+            } ?: return
+            val tweak: (CaptureRequest.Builder) -> Unit = { builder ->
+                builder.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antibandingValue)
+            }
+            setCustomRequest.invoke(manager, tweak)
+        }
+    }
+
+    private fun findField(start: Class<*>, name: String): Field? {
+        var current: Class<*>? = start
+        while (current != null) {
+            try {
+                return current.getDeclaredField(name)
+            } catch (_: NoSuchFieldException) {
+                current = current.superclass
+            }
+        }
+        return null
     }
 
     private fun micLabel(): String = when {

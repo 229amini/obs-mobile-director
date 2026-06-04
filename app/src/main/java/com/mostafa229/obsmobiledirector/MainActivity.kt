@@ -92,6 +92,7 @@ import com.mostafa229.obsmobiledirector.camera.CameraPreview
 import com.mostafa229.obsmobiledirector.camera.CameraCapabilityScanner
 import com.mostafa229.obsmobiledirector.camera.CameraDescriptor
 import com.mostafa229.obsmobiledirector.camera.CameraReport
+import com.mostafa229.obsmobiledirector.stream.AntibandingMode
 import com.mostafa229.obsmobiledirector.stream.StreamingPipeline
 import com.mostafa229.obsmobiledirector.stream.StreamTarget
 import com.pedro.library.view.OpenGlView
@@ -140,6 +141,7 @@ private fun AppScreen() {
     var showSettings by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
     var stabilizationEnabled by remember { mutableStateOf(true) }
+    var antibanding by remember { mutableStateOf(AntibandingMode.Auto) }
     var pipEnabled by remember { mutableStateOf(false) }
     var cameraSwitching by remember { mutableStateOf(false) }
     var zoomRatio by remember { mutableStateOf(1f) }
@@ -227,6 +229,14 @@ private fun AppScreen() {
             streamingPipeline.setStabilization(stabilizationEnabled)
         }.onFailure { error ->
             streamStatus = "Unable to change stabilization: ${error.message ?: "camera API error"}"
+        }
+    }
+
+    LaunchedEffect(antibanding) {
+        runCatching {
+            streamingPipeline.setAntibanding(antibanding)
+        }.onFailure { error ->
+            streamStatus = "Unable to set anti-flicker: ${error.message ?: "camera API error"}"
         }
     }
 
@@ -369,6 +379,7 @@ private fun AppScreen() {
             cameras = cameras,
             selectedCameraId = selectedCameraId,
             stabilizationEnabled = stabilizationEnabled,
+            antibanding = antibanding,
             pipEnabled = pipEnabled,
             micEnabled = micEnabled,
             audioAvailable = hasAudioPermission,
@@ -393,6 +404,10 @@ private fun AppScreen() {
                 stabilizationEnabled = next
                 val state = if (next) "enabled" else "disabled"
                 streamStatus = "Hardware stabilization $state for the selected camera when supported."
+            },
+            onAntibandingSelected = { mode ->
+                antibanding = mode
+                streamStatus = "Anti-flicker set to ${mode.label}."
             },
             onTogglePip = {
                 val next = !pipEnabled
@@ -689,6 +704,7 @@ private fun CameraHudOverlay(
     cameras: List<CameraDescriptor>,
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
+    antibanding: AntibandingMode,
     pipEnabled: Boolean,
     micEnabled: Boolean,
     audioAvailable: Boolean,
@@ -698,6 +714,7 @@ private fun CameraHudOverlay(
     isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
+    onAntibandingSelected: (AntibandingMode) -> Unit,
     onTogglePip: () -> Unit,
     onToggleMic: () -> Unit,
     onToggleSettings: () -> Unit,
@@ -740,12 +757,14 @@ private fun CameraHudOverlay(
                     cameras = cameras,
                     selectedCameraId = selectedCameraId,
                     stabilizationEnabled = stabilizationEnabled,
+                    antibanding = antibanding,
                     pipEnabled = pipEnabled,
                     micEnabled = micEnabled,
                     audioAvailable = audioAvailable,
                     isCameraEnabled = isCameraEnabled,
                     onCameraSelected = onCameraSelected,
                     onToggleStabilization = onToggleStabilization,
+                    onAntibandingSelected = onAntibandingSelected,
                     onTogglePip = onTogglePip,
                     onToggleMic = onToggleMic,
                     onOpenSettings = onToggleSettings,
@@ -837,12 +856,14 @@ private fun OptionsCard(
     cameras: List<CameraDescriptor>,
     selectedCameraId: String?,
     stabilizationEnabled: Boolean,
+    antibanding: AntibandingMode,
     pipEnabled: Boolean,
     micEnabled: Boolean,
     audioAvailable: Boolean,
     isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
+    onAntibandingSelected: (AntibandingMode) -> Unit,
     onTogglePip: () -> Unit,
     onToggleMic: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -889,6 +910,20 @@ private fun OptionsCard(
                         onClick = { onCameraSelected(camera) },
                         enabled = isCameraEnabled(camera),
                         label = { Text(camera.shortName()) }
+                    )
+                }
+            }
+
+            SectionLabel("Anti-flicker (lights)")
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                AntibandingMode.values().forEach { mode ->
+                    FilterChip(
+                        selected = antibanding == mode,
+                        onClick = { onAntibandingSelected(mode) },
+                        label = { Text(mode.label) }
                     )
                 }
             }

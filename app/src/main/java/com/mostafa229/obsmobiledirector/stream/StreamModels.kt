@@ -1,5 +1,18 @@
 package com.mostafa229.obsmobiledirector.stream
 
+import android.hardware.camera2.CaptureRequest
+
+/**
+ * Camera anti-banding (anti-flicker) mode. Constrains the auto-exposure so the shutter
+ * stays a multiple of the mains light period, removing the rolling light bands you get
+ * under fluorescent/LED lighting. Iran/EU mains is 50 Hz; US/etc is 60 Hz.
+ */
+enum class AntibandingMode(val label: String, val camera2Value: Int) {
+    Auto("Auto", CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_AUTO),
+    Hz50("50 Hz", CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_50HZ),
+    Hz60("60 Hz", CaptureRequest.CONTROL_AE_ANTIBANDING_MODE_60HZ)
+}
+
 data class StreamTarget(
     val host: String,
     val port: Int,
