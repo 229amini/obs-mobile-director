@@ -42,9 +42,11 @@ class StreamingPipeline(
 
     fun attachView(openGlView: OpenGlView) {
         if (attachedView == openGlView && srtCamera != null) {
-            prepareIfNeeded()
-            currentCameraId?.let { startPreview(it) }
-            applyStabilization()
+            // The Compose update lambda fires on every recomposition (e.g. each per-second
+            // bitrate status tick while streaming). Re-running applyStabilization() here
+            // reconfigured the Camera2 capture session each time and froze the on-screen
+            // preview. The view is already wired up, so do nothing — stabilization is
+            // applied on first attach and via setStabilization().
             return
         }
         attachedView = openGlView
