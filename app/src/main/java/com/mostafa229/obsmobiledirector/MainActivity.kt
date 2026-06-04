@@ -18,6 +18,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
@@ -372,6 +374,7 @@ private fun AppScreen() {
             audioAvailable = hasAudioPermission,
             streamRunning = streamRunning,
             streamStatus = streamStatus,
+            targetLabel = "${host.trim().ifBlank { "set IP" }}:$port",
             isCameraEnabled = { camera ->
                 !cameraSwitching && camera.id in pipSelectableCameraIds
             },
@@ -691,6 +694,7 @@ private fun CameraHudOverlay(
     audioAvailable: Boolean,
     streamRunning: Boolean,
     streamStatus: String,
+    targetLabel: String,
     isCameraEnabled: (CameraDescriptor) -> Boolean,
     onCameraSelected: (CameraDescriptor) -> Unit,
     onToggleStabilization: () -> Unit,
@@ -766,10 +770,37 @@ private fun CameraHudOverlay(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // Always-visible SRT target. Tap to open SRT setup and change the OBS
+                    // PC IP or the port (give each phone its own port for multi-cam).
+                    Surface(
+                        color = Color(0x3366D9EF),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.clickable { onToggleSettings() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.SettingsEthernet,
+                                contentDescription = "SRT setup",
+                                modifier = Modifier.size(16.dp),
+                                tint = Color(0xFF66D9EF)
+                            )
+                            Text(
+                                text = targetLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF66D9EF),
+                                maxLines = 1
+                            )
+                        }
+                    }
                     Text(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(start = 6.dp),
+                            .padding(start = 2.dp),
                         text = streamStatus,
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFFC8D0D8),
@@ -1003,6 +1034,14 @@ private fun SettingsPanel(
                 label = { Text("UDP port") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            Text(
+                text = "IP = your OBS PC's current Wi-Fi address (Windows: run ipconfig, use " +
+                    "IPv4). If the PC's IP changes, update it here.\n" +
+                    "Two phones? Give each a different port (e.g. 9001 and 9002) and add one " +
+                    "Media Source per port in OBS.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFAEB8C0)
             )
             OutlinedTextField(
                 modifier = Modifier.fillMaxWidth(),
