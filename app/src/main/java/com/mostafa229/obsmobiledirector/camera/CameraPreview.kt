@@ -63,7 +63,11 @@ fun CameraPreview(
         factory = { viewContext ->
             PreviewView(viewContext).apply {
                 scaleType = PreviewView.ScaleType.FILL_CENTER
-                implementationMode = PreviewView.ImplementationMode.PERFORMANCE
+                // COMPATIBLE uses a TextureView, which (unlike a SurfaceView in
+                // PERFORMANCE mode) is clipped by the parent's rounded-corner shape.
+                // Required for the PiP to render inside the rounded frame instead of
+                // punching a hard rectangle through it.
+                implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             }
         },
         update = { previewView ->

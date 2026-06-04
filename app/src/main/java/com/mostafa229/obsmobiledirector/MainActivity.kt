@@ -11,7 +11,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,11 +55,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -221,10 +230,47 @@ private fun AppScreen() {
         port = parsedPort ?: 9001
     )
 
+    // Shared zoom entry point used by the pinch gesture, the vertical slider, and the
+    // preset chips so they all stay in sync and report status the same way.
+    val applyZoom: (Float, Boolean) -> Unit = applyZoom@{ nextZoom, preferOptical ->
+        val constrainedZoom = nextZoom.coerceIn(zoomMin, zoomMax)
+        if (constrainedZoom == zoomRatio) return@applyZoom
+        zoomRatio = constrainedZoom
+        runCatching {
+            streamingPipeline.setZoomRatio(zoom = constrainedZoom, preferOptical = preferOptical)
+        }.onSuccess {
+            streamStatus = if (preferOptical && constrainedZoom >= 3f) {
+                "Zoom ${constrainedZoom.formatZoom()}x — tele lens used when the device exposes it."
+            } else {
+                "Zoom ${constrainedZoom.formatZoom()}x"
+            }
+        }.onFailure { error ->
+            streamStatus = "Unable to zoom: ${error.message ?: "camera API error"}"
+        }
+    }
+    // rememberUpdatedState lets the long-lived pinch gesture detector read the latest
+    // zoom without being torn down and relaunched on every zoom change.
+    val zoomRatioState = rememberUpdatedState(zoomRatio)
+    val canZoom = zoomMax > zoomMin
+
     Box(modifier = Modifier.fillMaxSize()) {
         StreamingPreview(
             streamingPipeline = streamingPipeline,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (canZoom) {
+                        Modifier.pointerInput(zoomMin, zoomMax) {
+                            detectTransformGestures { _, _, gestureZoom, _ ->
+                                if (gestureZoom != 1f) {
+                                    applyZoom(zoomRatioState.value * gestureZoom, false)
+                                }
+                            }
+                        }
+                    } else {
+                        Modifier
+                    }
+                )
         )
 
         TopStatusOverlay(
@@ -245,6 +291,20 @@ private fun AppScreen() {
                     .padding(end = 72.dp, bottom = 92.dp)
                     .fillMaxWidth(0.32f)
                     .aspectRatio(16f / 9f)
+            )
+        }
+
+        if (canZoom && !controlsHidden) {
+            VerticalZoomSlider(
+                zoomRatio = zoomRatio,
+                zoomMin = zoomMin,
+                zoomMax = zoomMax,
+                onZoomChanged = { applyZoom(it, false) },
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(start = 10.dp)
             )
         }
 
@@ -298,24 +358,7 @@ private fun AppScreen() {
             },
             onToggleSettings = { showSettings = !showSettings },
             onToggleControls = { controlsHidden = !controlsHidden },
-            onZoomChanged = { nextZoom, preferOptical ->
-                val constrainedZoom = nextZoom.coerceIn(zoomMin, zoomMax)
-                zoomRatio = constrainedZoom
-                runCatching {
-                    streamingPipeline.setZoomRatio(
-                        zoom = constrainedZoom,
-                        preferOptical = preferOptical
-                    )
-                }.onSuccess {
-                    streamStatus = if (preferOptical && constrainedZoom >= 3f) {
-                        "Zoom ${constrainedZoom.formatZoom()}x selected. Tele lens is used automatically when the device exposes it."
-                    } else {
-                        "Zoom ${constrainedZoom.formatZoom()}x selected."
-                    }
-                }.onFailure { error ->
-                    streamStatus = "Unable to zoom: ${error.message ?: "camera API error"}"
-                }
-            },
+            onZoomChanged = applyZoom,
             onToggleReport = {
                 val next = !showReport
                 showReport = next
@@ -408,23 +451,26 @@ private fun SecondaryCameraPip(
     onBindError: (Throwable) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(20.dp)
     Surface(
         modifier = modifier,
         color = Color.Black,
         shape = shape,
-        shadowElevation = 12.dp
+        shadowElevation = 14.dp
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(shape)
                 .background(Color.Black)
+                .border(width = 2.dp, color = Color(0x66FFFFFF), shape = shape)
         ) {
             CameraPreview(
                 cameraId = camera.id,
                 stabilizationEnabled = stabilizationEnabled,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(shape),
                 onError = onBindError
             )
         }
@@ -463,35 +509,16 @@ private fun ZoomControl(
     zoomMax: Float,
     onZoomChanged: (zoom: Float, preferOptical: Boolean) -> Unit
 ) {
-    val presets = listOf(0.6f, 1f, 2f, 3f, 5f)
+    val presets = listOf(0.6f, 1f, 2f, 3f, 5f).filter { it in zoomMin..zoomMax }
     Column(
         modifier = Modifier.width(172.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(
-                enabled = zoomRatio > zoomMin,
-                onClick = { onZoomChanged((zoomRatio - 0.5f).coerceAtLeast(zoomMin), false) }
-            ) {
-                Text("-")
-            }
-            Text(
-                text = "${zoomRatio.formatZoom()}x",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = Color(0xFFDCE4EA)
-            )
-            TextButton(
-                enabled = zoomRatio < zoomMax,
-                onClick = { onZoomChanged((zoomRatio + 0.5f).coerceAtMost(zoomMax), false) }
-            ) {
-                Text("+")
-            }
-        }
+        Text(
+            text = "Zoom ${zoomRatio.formatZoom()}x · pinch or slider",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color(0xFFAEB8C0)
+        )
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -499,11 +526,78 @@ private fun ZoomControl(
             presets.forEach { preset ->
                 FilterChip(
                     selected = kotlin.math.abs(zoomRatio - preset) < 0.15f,
-                    enabled = preset in zoomMin..zoomMax,
                     onClick = { onZoomChanged(preset, true) },
                     label = { Text("${preset.formatZoom()}x") }
                 )
             }
+        }
+    }
+}
+
+/**
+ * Camera-style vertical zoom slider. Top of the track is max zoom, bottom is min.
+ * Tap to jump, drag the thumb to scrub. Reports the absolute zoom ratio.
+ */
+@Composable
+private fun VerticalZoomSlider(
+    zoomRatio: Float,
+    zoomMin: Float,
+    zoomMax: Float,
+    onZoomChanged: (Float) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val range = (zoomMax - zoomMin).coerceAtLeast(0.0001f)
+    val fraction = ((zoomRatio - zoomMin) / range).coerceIn(0f, 1f)
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Surface(color = Color(0xB0000000), shape = RoundedCornerShape(999.dp)) {
+            Text(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                text = "${zoomRatio.formatZoom()}x",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF66D9EF)
+            )
+        }
+        Canvas(
+            modifier = Modifier
+                .width(40.dp)
+                .height(220.dp)
+                .pointerInput(zoomMin, zoomMax) {
+                    detectTapGestures { offset ->
+                        val f = (1f - offset.y / size.height).coerceIn(0f, 1f)
+                        onZoomChanged(zoomMin + f * range)
+                    }
+                }
+                .pointerInput(zoomMin, zoomMax) {
+                    detectVerticalDragGestures { change, _ ->
+                        change.consume()
+                        val f = (1f - change.position.y / size.height).coerceIn(0f, 1f)
+                        onZoomChanged(zoomMin + f * range)
+                    }
+                }
+        ) {
+            val cx = size.width / 2f
+            val stroke = 6.dp.toPx()
+            val thumbY = (1f - fraction) * size.height
+            drawLine(
+                color = Color(0x44FFFFFF),
+                start = Offset(cx, 0f),
+                end = Offset(cx, size.height),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+            drawLine(
+                color = Color(0xFF66D9EF),
+                start = Offset(cx, thumbY),
+                end = Offset(cx, size.height),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round
+            )
+            drawCircle(color = Color.White, radius = 9.dp.toPx(), center = Offset(cx, thumbY))
         }
     }
 }

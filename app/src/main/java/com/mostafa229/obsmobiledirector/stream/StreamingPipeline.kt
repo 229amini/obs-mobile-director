@@ -69,24 +69,21 @@ class StreamingPipeline(
         currentZoom = zoom.coerceIn(0.5f, 20f)
         val camera = srtCamera ?: return
         runCatching {
-            if (preferOptical) {
-                val opticalZoom = readOpticalZooms(camera)
+            val opticalTarget = if (preferOptical) {
+                camera.opticalZooms?.filterNotNull().orEmpty()
                     .filter { it > 1f }
                     .minByOrNull { kotlin.math.abs(it - currentZoom) }
-                if (
-                    opticalZoom != null &&
-                    kotlin.math.abs(opticalZoom - currentZoom) <= 0.75f &&
-                    invokeZoom(camera, "setOpticalZoom", opticalZoom)
-                ) {
-                    return
-                } else {
-                    invokeZoom(camera, "setZoom", currentZoom)
-                }
+                    ?.takeIf { kotlin.math.abs(it - currentZoom) <= 0.75f }
             } else {
-                invokeZoom(camera, "setZoom", currentZoom)
+                null
+            }
+            if (opticalTarget != null) {
+                camera.setOpticalZoom(opticalTarget)
+            } else {
+                camera.setZoom(currentZoom)
             }
         }.onFailure {
-            invokeZoom(camera, "setZoom", currentZoom)
+            runCatching { camera.setZoom(currentZoom) }
         }
     }
 
@@ -104,7 +101,7 @@ class StreamingPipeline(
             }
             activeTarget = target
             connected = false
-            scheduleConnectionTimeout(++connectionAttempt)
+            scheduleSlowConnectionHint(++connectionAttempt)
         } catch (error: Throwable) {
             activeTarget = null
             resetCameraForNextStream()
@@ -166,54 +163,26 @@ class StreamingPipeline(
         }
     }
 
-    private fun scheduleConnectionTimeout(attempt: Int) {
+    // Previously this tore down the encoder after 8s, which killed first-time SRT
+    // handshakes that legitimately take longer than that and left the app stuck on
+    // "connecting" with the stream silently dead. Now it only surfaces a hint and
+    // leaves the SRT caller running so it can keep retrying the handshake. Genuine
+    // failures still arrive through ConnectChecker.onConnectionFailed.
+    private fun scheduleSlowConnectionHint(attempt: Int) {
         mainHandler.postDelayed(
             {
                 val camera = srtCamera ?: return@postDelayed
                 if (attempt == connectionAttempt && !connected && camera.isStreaming) {
-                    val timedOutTarget = activeTarget
-                    activeTarget = null
-                    resetCameraForNextStream()
                     onStatus(
-                        "OBS did not accept SRT within 8 seconds. Check that OBS Media Source is listening on ${timedOutTarget?.listenerUri ?: "the selected port"}.",
-                        false
+                        "Still negotiating SRT. Confirm OBS has a Media Source listening on " +
+                            "${activeTarget?.listenerUri ?: "the selected port"} and that UDP is " +
+                            "open in Windows Firewall. Leave it running; it keeps retrying.",
+                        null
                     )
                 }
             },
-            8_000L
+            10_000L
         )
-    }
-
-    private fun readOpticalZooms(camera: SrtCamera2): List<Float> {
-        return runCatching {
-            val value = camera.javaClass.methods
-                .firstOrNull { it.name == "getOpticalZooms" && it.parameterTypes.isEmpty() }
-                ?.invoke(camera)
-            when (value) {
-                is FloatArray -> value.toList()
-                is DoubleArray -> value.map { it.toFloat() }
-                is IntArray -> value.map { it.toFloat() }
-                is Iterable<*> -> value.mapNotNull { (it as? Number)?.toFloat() }
-                else -> emptyList()
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun invokeZoom(camera: SrtCamera2, methodName: String, zoom: Float): Boolean {
-        val methods = camera.javaClass.methods.filter { it.name == methodName && it.parameterTypes.size == 1 }
-        return methods.any { method ->
-            runCatching {
-                val parameterType = method.parameterTypes.first()
-                val value = when (parameterType) {
-                    java.lang.Float.TYPE, java.lang.Float::class.java -> zoom
-                    java.lang.Double.TYPE, java.lang.Double::class.java -> zoom.toDouble()
-                    java.lang.Integer.TYPE, java.lang.Integer::class.java -> zoom.toInt()
-                    java.lang.Long.TYPE, java.lang.Long::class.java -> zoom.toLong()
-                    else -> zoom
-                }
-                method.invoke(camera, value)
-            }.isSuccess
-        }
     }
 
     private fun prepareIfNeeded() {
