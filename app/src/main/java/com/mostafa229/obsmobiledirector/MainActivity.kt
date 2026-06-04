@@ -81,6 +81,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -870,6 +871,9 @@ private fun OptionsCard(
     onOpenReport: () -> Unit,
     onClose: () -> Unit
 ) {
+    // Cap the panel to the screen so the (now taller) content scrolls instead of
+    // overflowing off the top of a short landscape screen.
+    val maxCardHeight = (LocalConfiguration.current.screenHeightDp - 100).coerceAtLeast(180).dp
     Surface(
         color = Color(0xF20E1014),
         shape = RoundedCornerShape(20.dp),
@@ -878,6 +882,8 @@ private fun OptionsCard(
         Column(
             modifier = Modifier
                 .widthIn(min = 280.dp, max = 380.dp)
+                .heightIn(max = maxCardHeight)
+                .verticalScroll(rememberScrollState())
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
