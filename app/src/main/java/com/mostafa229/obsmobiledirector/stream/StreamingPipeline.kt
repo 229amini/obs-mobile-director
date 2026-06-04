@@ -47,6 +47,13 @@ class StreamingPipeline(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val settings = StreamSettings()
 
+    // Adaptive bitrate: when the SRT send buffer congests (network can't keep up), drop
+    // the encoder bitrate so packets don't pile up and grow latency; recover gradually
+    // back to the target once the buffer clears.
+    private var currentBitrate = settings.videoBitrate
+    private val minVideoBitrate = 1_500_000
+    private val bitrateRecoverStep = 250_000
+
     fun attachView(openGlView: OpenGlView) {
         if (attachedView == openGlView && srtCamera != null) {
             // The Compose update lambda fires on every recomposition (e.g. each per-second
@@ -152,6 +159,7 @@ class StreamingPipeline(
             setZoomRatio(currentZoom)
             applyStabilization()
             applyAntibanding()
+            currentBitrate = settings.videoBitrate
             if (!camera.isStreaming) {
                 camera.startStream(target.uri)
             }
@@ -345,6 +353,21 @@ class StreamingPipeline(
         else -> "muted"
     }
 
+    // Step the encoder bitrate down on congestion (x0.8, floored) and recover gradually
+    // (+250 kbps/tick up to target) when the send buffer is clear.
+    private fun adaptBitrate(congested: Boolean) {
+        val camera = srtCamera ?: return
+        val next = if (congested) {
+            (currentBitrate * 4 / 5).coerceAtLeast(minVideoBitrate)
+        } else {
+            (currentBitrate + bitrateRecoverStep).coerceAtMost(settings.videoBitrate)
+        }
+        if (next != currentBitrate) {
+            currentBitrate = next
+            runCatching { camera.setVideoBitrateOnFly(next) }
+        }
+    }
+
     private val connectChecker = object : ConnectChecker {
         override fun onConnectionStarted(url: String) {
             connected = false
@@ -383,7 +406,17 @@ class StreamingPipeline(
 
         override fun onNewBitrate(bitrate: Long) {
             connected = true
-            onStatus("SRT live (${micLabel()}): ${bitrate / 1000} Kbps upload.", true)
+            val client = srtCamera?.streamClient
+            val congested = runCatching { client?.hasCongestion() }.getOrNull() ?: false
+            val buffered = runCatching { client?.getItemsInCache() }.getOrNull() ?: 0
+            // A steadily growing "buf" means the sender (phone/Wi-Fi) is the bottleneck and
+            // the creep is on this side; a buf that stays ~0 points the creep at OBS.
+            adaptBitrate(congested)
+            val warn = if (congested) " ⚠ congested" else ""
+            onStatus(
+                "SRT live (${micLabel()}): ${bitrate / 1000} Kbps · buf $buffered$warn",
+                true
+            )
         }
     }
 }
