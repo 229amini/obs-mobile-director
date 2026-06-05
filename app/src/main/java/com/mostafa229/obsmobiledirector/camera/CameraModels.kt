@@ -10,9 +10,17 @@ data class CameraDescriptor(
     val facing: String,
     val isLogicalMultiCamera: Boolean,
     val physicalCameraIds: List<String>,
+    val physicalLenses: List<PhysicalLensDescriptor>,
     val focalLengths: List<Float>,
     val zoomRange: String?,
+    val zoomMin: Float?,
+    val zoomMax: Float?,
     val videoStabilizationModes: List<String>,
     val opticalStabilizationModes: List<String>
 )
 
+data class PhysicalLensDescriptor(
+    val id: String,
+    val focalLengths: List<Float>,
+    val lensRole: String
+)
