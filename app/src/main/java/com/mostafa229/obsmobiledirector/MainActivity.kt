@@ -1,10 +1,14 @@
 package com.mostafa229.obsmobiledirector
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.provider.MediaStore
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -52,6 +56,7 @@ import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalIconButton
@@ -150,6 +155,9 @@ private fun AppScreen() {
     var port by remember { mutableStateOf("9001") }
     var latencyMs by remember { mutableStateOf(StreamTarget.DEFAULT_LATENCY_MILLIS.toString()) }
     var streamRunning by remember { mutableStateOf(false) }
+    var recording by remember { mutableStateOf(false) }
+    var recordUri by remember { mutableStateOf<Uri?>(null) }
+    var recordPfd by remember { mutableStateOf<ParcelFileDescriptor?>(null) }
     var streamStatus by remember {
         mutableStateOf("Preview active. Configure OBS as an SRT listener, then start output.")
     }
@@ -243,6 +251,19 @@ private fun AppScreen() {
 
     DisposableEffect(Unit) {
         onDispose {
+            // Finalize any in-progress recording so the MP4 is playable and visible.
+            runCatching { streamingPipeline.stopRecording() }
+            recordPfd?.let { pfd -> runCatching { pfd.close() } }
+            recordUri?.let { uri ->
+                runCatching {
+                    context.contentResolver.update(
+                        uri,
+                        ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) },
+                        null,
+                        null
+                    )
+                }
+            }
             streamingPipeline.release()
         }
     }
@@ -385,6 +406,7 @@ private fun AppScreen() {
             micEnabled = micEnabled,
             audioAvailable = hasAudioPermission,
             streamRunning = streamRunning,
+            recording = recording,
             streamStatus = streamStatus,
             targetLabel = "${host.trim().ifBlank { "set IP" }}:$port",
             isCameraEnabled = { camera ->
@@ -468,6 +490,56 @@ private fun AppScreen() {
                     }.onFailure { error ->
                         streamRunning = false
                         streamStatus = "Unable to start SRT: ${error.message ?: "unknown encoder error"}"
+                    }
+                }
+            },
+            onToggleRecord = {
+                if (recording) {
+                    runCatching { streamingPipeline.stopRecording() }
+                    recordPfd?.let { pfd -> runCatching { pfd.close() } }
+                    recordUri?.let { uri ->
+                        runCatching {
+                            context.contentResolver.update(
+                                uri,
+                                ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) },
+                                null,
+                                null
+                            )
+                        }
+                    }
+                    recordPfd = null
+                    recordUri = null
+                    recording = false
+                    streamStatus = "Recording saved to gallery (Movies/OBS Mobile Director)."
+                } else if (selectedCameraId == null) {
+                    streamStatus = "Camera is still loading. Wait, then start recording."
+                } else {
+                    val resolver = context.contentResolver
+                    val name = "OBSMobile_${System.currentTimeMillis()}.mp4"
+                    val values = ContentValues().apply {
+                        put(MediaStore.Video.Media.DISPLAY_NAME, name)
+                        put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                        put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/OBS Mobile Director")
+                        put(MediaStore.Video.Media.IS_PENDING, 1)
+                    }
+                    val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+                    val pfd = uri?.let { runCatching { resolver.openFileDescriptor(it, "w") }.getOrNull() }
+                    if (uri == null || pfd == null) {
+                        uri?.let { runCatching { resolver.delete(it, null, null) } }
+                        streamStatus = "Couldn't create the recording file."
+                    } else {
+                        runCatching {
+                            streamingPipeline.startRecording(pfd.fileDescriptor)
+                        }.onSuccess {
+                            recordPfd = pfd
+                            recordUri = uri
+                            recording = true
+                            streamStatus = "● Recording to gallery…"
+                        }.onFailure { error ->
+                            runCatching { pfd.close() }
+                            runCatching { resolver.delete(uri, null, null) }
+                            streamStatus = "Couldn't start recording: ${error.message ?: "encoder error"}"
+                        }
                     }
                 }
             }
@@ -710,6 +782,7 @@ private fun CameraHudOverlay(
     micEnabled: Boolean,
     audioAvailable: Boolean,
     streamRunning: Boolean,
+    recording: Boolean,
     streamStatus: String,
     targetLabel: String,
     isCameraEnabled: (CameraDescriptor) -> Boolean,
@@ -720,7 +793,8 @@ private fun CameraHudOverlay(
     onToggleMic: () -> Unit,
     onToggleSettings: () -> Unit,
     onToggleReport: () -> Unit,
-    onToggleStream: () -> Unit
+    onToggleStream: () -> Unit,
+    onToggleRecord: () -> Unit
 ) {
     var optionsOpen by remember { mutableStateOf(false) }
 
@@ -836,6 +910,13 @@ private fun CameraHudOverlay(
                         Icon(
                             imageVector = Icons.Filled.Cameraswitch,
                             contentDescription = "Switch camera"
+                        )
+                    }
+                    FilledTonalIconButton(onClick = onToggleRecord) {
+                        Icon(
+                            imageVector = Icons.Filled.Videocam,
+                            contentDescription = if (recording) "Stop recording" else "Record to phone",
+                            tint = if (recording) Color(0xFFE5484D) else Color(0xFFDCE4EA)
                         )
                     }
                     FilledTonalIconButton(onClick = { optionsOpen = !optionsOpen }) {

@@ -6,6 +6,7 @@ import android.os.Looper
 import com.pedro.common.ConnectChecker
 import com.pedro.library.srt.SrtCamera2
 import com.pedro.library.view.OpenGlView
+import java.io.FileDescriptor
 import java.lang.reflect.Field
 
 data class StreamSettings(
@@ -181,8 +182,33 @@ class StreamingPipeline(
         resetCameraForNextStream()
     }
 
+    val isRecording: Boolean
+        get() = srtCamera?.isRecording == true
+
+    /**
+     * Record the encoded video+audio to [fd] (a MediaStore file descriptor). Works during
+     * preview only or alongside an active SRT stream — RootEncoder muxes to the file and the
+     * network independently. The caller must keep [fd] open until [stopRecording].
+     */
+    fun startRecording(fd: FileDescriptor) {
+        val camera = srtCamera ?: error("Preview is not ready yet.")
+        prepareIfNeeded()
+        currentCameraId?.let { startPreview(it) }
+        applyStabilization()
+        applyAntibanding()
+        if (!camera.isRecording) {
+            camera.startRecord(fd)
+        }
+    }
+
+    /** Finalize the recording (writes the MP4 moov atom so the file is playable). */
+    fun stopRecording() {
+        srtCamera?.takeIf { it.isRecording }?.stopRecord()
+    }
+
     fun release() {
         runCatching {
+            srtCamera?.takeIf { it.isRecording }?.stopRecord()
             srtCamera?.takeIf { it.isStreaming }?.stopStream()
             srtCamera?.stopPreview()
         }
@@ -207,6 +233,10 @@ class StreamingPipeline(
     }
 
     private fun resetCameraForNextStream() {
+        // Never tear down / recreate the camera while a recording is in progress — it would
+        // orphan the recorder and corrupt the MP4. The camera stays healthy because the
+        // recording keeps the encoders alive, so the reset isn't needed here anyway.
+        if (srtCamera?.isRecording == true) return
         val openGlView = attachedView ?: run {
             prepared = false
             return
